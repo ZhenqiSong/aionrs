@@ -317,21 +317,24 @@ async fn repl_loop(
         io::stdin().lock().read_line(&mut input)?;
         let input = input.trim();
 
-        if input.is_empty() || input == "/quit" || input == "/exit" {
+        if input.is_empty() {
             break;
         }
 
         match engine.run(input, "").await {
             Ok(result) => {
-                output.emit_stream_end(
-                    "",
-                    result.turns,
-                    result.usage.input_tokens,
-                    result.usage.output_tokens,
-                    result.usage.cache_creation_tokens,
-                    result.usage.cache_read_tokens,
-                );
+                if result.turns > 0 {
+                    output.emit_stream_end(
+                        "",
+                        result.turns,
+                        result.usage.input_tokens,
+                        result.usage.output_tokens,
+                        result.usage.cache_creation_tokens,
+                        result.usage.cache_read_tokens,
+                    );
+                }
             }
+            Err(aion_agent::engine::AgentError::UserAborted) => break,
             Err(e) => {
                 output.emit_error(&e.to_string());
             }
