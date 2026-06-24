@@ -14,18 +14,19 @@ use crate::output::OutputSink;
 use crate::plan::prompt as plan_prompt;
 use crate::plan::state::PlanState;
 use crate::session::{Session, SessionManager};
+use crate::stream::StreamOutcome;
 use crate::tool_call::{
-    DEFAULT_MAX_MALFORMED_TOOL_CALL_TURNS, RepeatedMalformedToolCallTracker,
-    malformed_only_fingerprint, reason as malformed_tool_call_reason,
-    synthetic_result as synthetic_malformed_tool_result,
+    DEFAULT_MAX_TOOL_CALL_FAILURE, DEFAULT_MAX_TOOL_CALL_MALFORMED, ToolCallMalformedFingerprint,
+    merge_tool_results, tool_call_malformed_fingerprint, tool_call_malformed_reason,
 };
+use crate::turn::{FinalizationReason, TurnGuardAction, TurnGuards, TurnKind, TurnOutcome};
 use aion_config::compact::CompactConfig;
 use aion_config::config::Config;
 use aion_config::hooks::HookEngine;
 use aion_protocol::events::ToolCategory;
 use aion_providers::provider::{LlmProvider, create_provider};
 use aion_tools::registry::ToolRegistry;
-use aion_types::llm::{LlmEvent, LlmRequest};
+use aion_types::llm::{LlmEvent, LlmRequest, ThinkingConfig};
 use aion_types::message::{ContentBlock, Message, Role, StopReason, TokenUsage};
 use aion_types::skill_types::{ContextModifier, PlanModeTransition, effort_to_string};
 use tracing::Instrument;
@@ -35,6 +36,7 @@ pub struct AgentResult {
     pub text: String,
     pub stop_reason: StopReason,
     pub usage: TokenUsage,
+    /// Counted normal model turns in this run.
     pub turns: usize,
 }
 
@@ -45,10 +47,11 @@ pub struct AgentEngine {
     system_prompt: String,
     model: String,
     max_tokens: u32,
-    max_turns: Option<usize>,
-    max_malformed_tool_call_turns: usize,
+    max_turns_per_run: Option<usize>,
+    max_tool_call_malformed_turns: usize,
+    max_tool_call_failure_turns: usize,
     total_usage: TokenUsage,
-    thinking: Option<aion_types::llm::ThinkingConfig>,
+    thinking: Option<ThinkingConfig>,
     /// Resolved provider compat settings (for capability validation)
     compat: aion_config::compat::ProviderCompat,
     confirmer: Arc<Mutex<ToolConfirmer>>,
@@ -61,7 +64,7 @@ pub struct AgentEngine {
     protocol_writer: Option<Arc<dyn aion_protocol::writer::ProtocolEmitter>>,
     allow_list: Vec<String>,
     /// Persisted reasoning effort, updated by skill context modifiers.
-    /// Carried into each turn's LlmRequest.reasoning_effort.
+    /// Carried into each model turn's LlmRequest.reasoning_effort.
     current_reasoning_effort: Option<String>,
     /// Compaction configuration (thresholds, enabled flag, etc.)
     compact_config: CompactConfig,
@@ -121,10 +124,13 @@ impl AgentEngine {
             system_prompt,
             model: config.model,
             max_tokens: config.max_tokens,
-            max_turns: config.max_turns,
-            max_malformed_tool_call_turns: config
-                .max_malformed_tool_call_turns
-                .unwrap_or(DEFAULT_MAX_MALFORMED_TOOL_CALL_TURNS),
+            max_turns_per_run: config.max_turns,
+            max_tool_call_malformed_turns: config
+                .max_tool_call_malformed_turns
+                .unwrap_or(DEFAULT_MAX_TOOL_CALL_MALFORMED),
+            max_tool_call_failure_turns: config
+                .max_tool_call_failure_turns
+                .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             total_usage: TokenUsage::default(),
             thinking: config.thinking,
             compat: config.compat.clone(),
@@ -193,10 +199,13 @@ impl AgentEngine {
             system_prompt,
             model: config.model.clone(),
             max_tokens: config.max_tokens,
-            max_turns: config.max_turns,
-            max_malformed_tool_call_turns: config
-                .max_malformed_tool_call_turns
-                .unwrap_or(DEFAULT_MAX_MALFORMED_TOOL_CALL_TURNS),
+            max_turns_per_run: config.max_turns,
+            max_tool_call_malformed_turns: config
+                .max_tool_call_malformed_turns
+                .unwrap_or(DEFAULT_MAX_TOOL_CALL_MALFORMED),
+            max_tool_call_failure_turns: config
+                .max_tool_call_failure_turns
+                .unwrap_or(DEFAULT_MAX_TOOL_CALL_FAILURE),
             total_usage: session.total_usage.clone(),
             thinking: config.thinking,
             compat: config.compat.clone(),
@@ -243,21 +252,6 @@ impl AgentEngine {
         &mut self.tools
     }
 
-    /// Initialize a new session for this engine run
-    pub fn init_session(
-        &mut self,
-        provider_name: &str,
-        cwd: &str,
-        session_id: Option<&str>,
-    ) -> anyhow::Result<()> {
-        if let Some(mgr) = &self.session_manager {
-            let session = mgr.create(provider_name, &self.model, cwd, session_id)?;
-            tracing::info!(target: "aion_agent", session_id = %session.id, provider = %provider_name, model = %self.model, "session started");
-            self.current_session = Some(session);
-        }
-        Ok(())
-    }
-
     /// Get the current session ID (if sessions are enabled and initialized)
     pub fn current_session_id(&self) -> Option<String> {
         self.current_session.as_ref().map(|s| s.id.clone())
@@ -289,134 +283,9 @@ impl AgentEngine {
     pub fn set_plan_active_flag(&mut self, flag: Arc<AtomicBool>) {
         self.plan_active_flag = Some(flag);
     }
+}
 
-    /// Default thinking budget when "enabled" is requested without a specific budget.
-    const DEFAULT_THINKING_BUDGET: u32 = 10_000;
-
-    /// Apply a runtime config update received from the protocol layer.
-    ///
-    /// Returns a list of human-readable change descriptions for the Info event.
-    /// Empty list means no fields were changed.
-    pub fn apply_config_update(
-        &mut self,
-        model: Option<String>,
-        thinking: Option<String>,
-        thinking_budget: Option<u32>,
-        effort: Option<String>,
-        compaction: Option<String>,
-    ) -> Vec<String> {
-        let mut changes = Vec::new();
-
-        if let Some(new_model) = model {
-            let old = std::mem::replace(&mut self.model, new_model.clone());
-            changes.push(format!("model: {old} → {new_model}"));
-        }
-
-        if let Some(thinking_str) = thinking {
-            if !self.compat.supports_thinking() {
-                changes.push("thinking: not supported by current provider".to_string());
-            } else {
-                match thinking_str.as_str() {
-                    "enabled" => {
-                        let budget = thinking_budget.unwrap_or(Self::DEFAULT_THINKING_BUDGET);
-                        self.thinking = Some(aion_types::llm::ThinkingConfig::Enabled {
-                            budget_tokens: budget,
-                        });
-                        changes.push(format!("thinking: enabled (budget: {budget})"));
-                    }
-                    "disabled" => {
-                        self.thinking = Some(aion_types::llm::ThinkingConfig::Disabled);
-                        changes.push("thinking: disabled".to_string());
-                    }
-                    other => {
-                        changes.push(format!("thinking: ignored invalid value \"{other}\""));
-                    }
-                }
-            }
-        } else if let Some(new_budget) = thinking_budget
-            && let Some(aion_types::llm::ThinkingConfig::Enabled { budget_tokens }) =
-                &mut self.thinking
-        {
-            *budget_tokens = new_budget;
-            changes.push(format!("thinking budget: {new_budget}"));
-        }
-
-        if let Some(new_effort) = effort {
-            if new_effort.is_empty() {
-                self.current_reasoning_effort = None;
-                changes.push("effort: cleared".to_string());
-            } else if !self.compat.supports_effort() {
-                changes.push("effort: not supported by current provider".to_string());
-            } else {
-                let levels = self.compat.effort_levels();
-                if !levels.is_empty() && !levels.iter().any(|l| l == &new_effort) {
-                    changes.push(format!(
-                        "effort: invalid level \"{}\" (valid: {})",
-                        new_effort,
-                        levels.join(", ")
-                    ));
-                } else {
-                    let old = self
-                        .current_reasoning_effort
-                        .replace(new_effort.clone())
-                        .unwrap_or_else(|| "none".to_string());
-                    changes.push(format!("effort: {old} → {new_effort}"));
-                }
-            }
-        }
-
-        if let Some(ref level_str) = compaction {
-            match level_str.parse::<aion_compact::CompactionLevel>() {
-                Ok(new_level) => {
-                    let old = self.compaction_level.to_string();
-                    self.compaction_level = new_level;
-                    changes.push(format!("compaction: {old} → {new_level}"));
-                }
-                Err(e) => {
-                    changes.push(format!("compaction: invalid ({e})"));
-                }
-            }
-        }
-
-        changes
-    }
-
-    /// Handle a slash command. Returns `None` if input is not a recognized command.
-    pub async fn handle_command(
-        &mut self,
-        input: &str,
-    ) -> Option<Result<crate::commands::CommandResult, anyhow::Error>> {
-        let input = input.trim();
-        let without_slash = input.strip_prefix('/')?;
-        let (name, args) = match without_slash.split_once(char::is_whitespace) {
-            Some((n, rest)) => (n, rest.trim()),
-            None => (without_slash, ""),
-        };
-
-        let cmd = self.commands.find(name)?;
-
-        // We need to borrow self mutably for CommandContext while also
-        // borrowing self.commands immutably (already done above via find()).
-        // Use a raw pointer to break the borrow conflict — safe because
-        // the command is not modified during execution.
-        let cmd_ptr = cmd as *const dyn crate::commands::SlashCommand;
-
-        let mut ctx = crate::commands::CommandContext {
-            messages: &mut self.messages,
-            compact_state: &mut self.compact_state,
-            compact_config: &self.compact_config,
-            provider: Arc::clone(&self.provider),
-            model: &self.model,
-            output: self.output.as_ref(),
-            registry: &self.commands,
-        };
-
-        // SAFETY: cmd_ptr points to a command inside self.commands which is only
-        // borrowed immutably and not mutated during execute().
-        let result = unsafe { &*cmd_ptr }.execute(&mut ctx, args).await;
-        Some(result)
-    }
-
+impl AgentEngine {
     /// Run the agent loop with user input
     pub async fn run(&mut self, user_input: &str, msg_id: &str) -> Result<AgentResult, AgentError> {
         let session_id = self
@@ -433,15 +302,6 @@ impl AgentEngine {
         self.run_inner(user_input, msg_id).instrument(span).await
     }
 
-    /// Return metadata for all registered slash commands.
-    pub fn slash_command_list(&self) -> Vec<(String, String)> {
-        self.commands
-            .all()
-            .iter()
-            .map(|cmd| (cmd.name().to_string(), cmd.description().to_string()))
-            .collect()
-    }
-
     async fn run_inner(
         &mut self,
         user_input: &str,
@@ -451,10 +311,6 @@ impl AgentEngine {
         if let Some(result) = self.handle_command(user_input).await {
             let cmd_name = user_input.split_whitespace().next().unwrap_or(user_input);
             return match result {
-                Ok(crate::commands::CommandResult::Exit) => {
-                    tracing::info!(command = cmd_name, "Slash command executed: exit");
-                    Err(AgentError::UserAborted)
-                }
                 Ok(crate::commands::CommandResult::Continue) => {
                     tracing::info!(command = cmd_name, "Slash command executed");
                     Ok(AgentResult {
@@ -463,6 +319,10 @@ impl AgentEngine {
                         usage: TokenUsage::default(),
                         turns: 0,
                     })
+                }
+                Ok(crate::commands::CommandResult::Exit) => {
+                    tracing::info!(command = cmd_name, "Slash command executed: exit");
+                    Err(AgentError::UserAborted)
                 }
                 Err(e) => {
                     tracing::error!(command = cmd_name, error = %e, "Slash command failed");
@@ -480,373 +340,514 @@ impl AgentEngine {
             }],
         ));
 
-        let mut turn: usize = 0;
-        let mut repeated_malformed_tool_calls = RepeatedMalformedToolCallTracker::default();
+        let mut guards = TurnGuards::new(
+            self.max_turns_per_run,
+            self.max_tool_call_malformed_turns,
+            self.max_tool_call_failure_turns,
+        );
         loop {
-            if let Some(limit) = self.max_turns
-                && turn >= limit
-            {
+            if let Some(limit) = guards.turn_budget_reached() {
                 self.save_session();
+                let message = format!(
+                    "Stopped after reaching the turn budget (max_turns={limit}); the task did not converge. Try adjusting the request or retrying."
+                );
+                tracing::warn!(target: "aion_agent", limit, "stopping agent run at turn budget");
+                self.output.emit_error(&message);
                 return Ok(AgentResult {
                     text: String::new(),
                     stop_reason: StopReason::MaxTurns,
                     usage: self.total_usage.clone(),
-                    turns: turn,
+                    turns: guards.counted_turns(),
                 });
             }
-            // Run multi-level compaction before each API call.
-            // On the first turn last_input_tokens is 0 so neither
-            // autocompact nor emergency will fire.
-            self.run_compaction().await?;
+            let outcome = self.run_turn(TurnKind::Normal).await?;
+            guards.record_counted_turn();
 
-            // Build tool list: filter based on plan mode state
-            let tools = if self.plan_state.is_active {
-                // Plan mode: only Info-category tools (excluding EnterPlanMode)
-                self.tools.to_tool_defs_filtered(|t| {
-                    t.category() == ToolCategory::Info && t.name() != "EnterPlanMode"
-                })
-            } else {
-                // Normal mode: all tools except ExitPlanMode
-                self.tools
-                    .to_tool_defs_filtered(|t| t.name() != "ExitPlanMode")
-            };
-
-            // Build system prompt: append plan mode instructions when active
-            let system = if self.plan_state.is_active {
-                format!(
-                    "{}\n\n{}",
-                    self.system_prompt,
-                    plan_prompt::plan_mode_instructions()
-                )
-            } else {
-                self.system_prompt.clone()
-            };
-
-            // Record prompt state for cache diagnostics
-            self.cache_detector.record_request(&system, &tools);
-
-            let request = LlmRequest {
-                model: self.model.clone(),
-                system,
-                messages: self.messages.clone(),
-                tools,
-                max_tokens: self.max_tokens,
-                thinking: self.thinking.clone(),
-                reasoning_effort: self.current_reasoning_effort.clone(),
-            };
-
-            let mut rx = self.provider.stream(&request).await?;
-            let mut assistant_text = String::new();
-            let mut thinking_text = String::new();
-            let mut thinking_signature: Option<String> = None;
-            let mut tool_calls: Vec<ContentBlock> = Vec::new();
-            let mut stop_reason = StopReason::EndTurn;
-            let mut turn_usage = TokenUsage::default();
-
-            while let Some(event) = rx.recv().await {
-                match event {
-                    LlmEvent::TextDelta(text) => {
-                        self.output.emit_text_delta(&text, &self.current_msg_id);
-                        assistant_text.push_str(&text);
-                    }
-                    LlmEvent::ToolUse {
-                        id,
-                        name,
-                        input,
-                        extra,
-                    } => {
-                        if id.trim().is_empty() {
-                            tracing::error!(
-                                target: "aion_agent",
-                                tool = %name,
-                                "provider emitted tool call with empty tool_use_id"
-                            );
-                        } else {
-                            tracing::debug!(
-                                target: "aion_agent",
-                                tool_use_id = %id,
-                                tool = %name,
-                                "provider tool call received"
-                            );
-                        }
-                        let input_str = serde_json::to_string(&input).unwrap_or_default();
-                        self.output.emit_tool_call(&id, &name, &input_str);
-                        tool_calls.push(ContentBlock::ToolUse {
-                            id,
-                            name,
-                            input,
-                            extra,
-                        });
-                    }
-                    LlmEvent::ThinkingDelta(text) => {
-                        self.output.emit_thinking(&text, &self.current_msg_id);
-                        thinking_text.push_str(&text);
-                    }
-                    LlmEvent::ThinkingSignature(signature) => {
-                        thinking_signature = Some(signature);
-                    }
-                    LlmEvent::Done {
-                        stop_reason: sr,
-                        usage,
-                    } => {
-                        stop_reason = sr;
-                        turn_usage = usage;
-                    }
-                    LlmEvent::Error(e) => {
-                        return Err(AgentError::ApiError(e));
-                    }
+            let (assistant_text, tool_calls) = match TurnOutcome::from_stream(outcome) {
+                TurnOutcome::ToolRound(outcome) => {
+                    let assistant_content = build_assistant_content(&outcome);
+                    self.messages
+                        .push(Message::now(Role::Assistant, assistant_content));
+                    (outcome.assistant_text, outcome.tool_calls)
                 }
-            }
-
-            self.total_usage.input_tokens += turn_usage.input_tokens;
-            self.total_usage.output_tokens += turn_usage.output_tokens;
-            self.total_usage.cache_creation_tokens += turn_usage.cache_creation_tokens;
-            self.total_usage.cache_read_tokens += turn_usage.cache_read_tokens;
-
-            // Track per-turn input tokens for compaction watermark.
-            // Use max(provider_reported, local_estimate) as a safety net:
-            // some providers (e.g. DeepSeek with prefix caching) underreport
-            // prompt_tokens, causing compaction to never trigger.
-            let local_estimate = estimate::estimate_tokens_from_messages(&self.messages);
-            let effective_watermark = turn_usage.input_tokens.max(local_estimate);
-
-            if local_estimate > turn_usage.input_tokens
-                && local_estimate.saturating_sub(turn_usage.input_tokens) > 10_000
-            {
-                self.output.emit_info(&format!(
-                    "Token watermark override: provider={}, local_estimate={}, using={}",
-                    turn_usage.input_tokens, local_estimate, effective_watermark
-                ));
-            }
-
-            self.compact_state.last_input_tokens = effective_watermark;
-
-            // Cache break detection
-            let cache_stats = CacheStats {
-                input_tokens: turn_usage.input_tokens,
-                cache_read_tokens: turn_usage.cache_read_tokens,
-                cache_creation_tokens: turn_usage.cache_creation_tokens,
-            };
-            if let Some(diagnostic) = self.cache_detector.check_response(cache_stats) {
-                match &diagnostic {
-                    CacheDiagnostic::FullMiss { cause } => {
-                        self.output
-                            .emit_error(&format!("Cache full miss: {cause:?}"));
-                    }
-                    CacheDiagnostic::PartialMiss { hit_rate, cause } => {
-                        if self.compact_config.cache_diagnostics {
-                            self.output.emit_info(&format!(
-                                "Cache: {:.0}% hit rate (cause: {cause:?})",
-                                hit_rate * 100.0
-                            ));
-                        }
-                    }
-                    CacheDiagnostic::Healthy { hit_rate } => {
-                        if self.compact_config.cache_diagnostics {
-                            self.output
-                                .emit_info(&format!("Cache: {:.0}% hit rate", hit_rate * 100.0));
-                        }
-                    }
+                TurnOutcome::Final(outcome) => {
+                    let assistant_content = build_assistant_content(&outcome);
+                    self.messages
+                        .push(Message::now(Role::Assistant, assistant_content));
+                    self.save_session();
+                    return Ok(AgentResult {
+                        text: outcome.assistant_text,
+                        stop_reason: outcome.stop_reason,
+                        usage: self.total_usage.clone(),
+                        turns: guards.counted_turns(),
+                    });
                 }
-            }
-
-            let mut assistant_content: Vec<ContentBlock> = Vec::new();
-            if !thinking_text.is_empty() || thinking_signature.is_some() {
-                assistant_content.push(ContentBlock::Thinking {
-                    thinking: thinking_text,
-                    signature: thinking_signature,
-                });
-            }
-            if !assistant_text.is_empty() {
-                assistant_content.push(ContentBlock::Text {
-                    text: assistant_text.clone(),
-                });
-            }
-            assistant_content.extend(tool_calls.clone());
-
-            self.messages
-                .push(Message::now(Role::Assistant, assistant_content));
-
-            if tool_calls.is_empty() {
-                self.save_session();
-                return Ok(AgentResult {
-                    text: assistant_text,
-                    stop_reason,
-                    usage: self.total_usage.clone(),
-                    turns: turn + 1,
-                });
-            }
-
-            let malformed_reasons: Vec<_> = tool_calls
-                .iter()
-                .map(|call| {
-                    let ContentBlock::ToolUse { id, name, .. } = call else {
-                        return None;
-                    };
-                    malformed_tool_call_reason(id, name)
-                })
-                .collect();
-            let malformed_only_fingerprint =
-                malformed_only_fingerprint(&tool_calls, &malformed_reasons);
-            let executable_tool_calls: Vec<_> = tool_calls
-                .iter()
-                .zip(&malformed_reasons)
-                .filter_map(|(call, reason)| {
-                    if reason.is_none() {
-                        Some(call.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let (executable_results, executable_modifiers) = if executable_tool_calls.is_empty() {
-                (Vec::new(), Vec::new())
-            } else if let Some(ref approval_mgr) = self.approval_manager {
-                // JSON stream mode: use protocol-based approval
-                let writer = self
-                    .protocol_writer
-                    .as_ref()
-                    .expect("protocol writer required for approval");
-                let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
-                match execute_tool_calls_with_approval(
-                    &self.tools,
-                    &executable_tool_calls,
-                    approval_mgr,
-                    writer,
-                    &self.current_msg_id,
-                    auto_approve,
-                    &self.allow_list,
-                    self.hooks.as_mut(),
-                    self.compaction_level,
-                    self.toon_enabled,
-                )
-                .await
-                {
-                    Ok(o) => (o.results, o.modifiers),
-                    Err(ExecutionControl::Quit) => {
-                        self.save_session();
-                        return Err(AgentError::UserAborted);
-                    }
+                TurnOutcome::Truncated(outcome) => {
+                    let assistant_content = build_assistant_content(&outcome);
+                    self.messages
+                        .push(Message::now(Role::Assistant, assistant_content));
+                    return self
+                        .finalize_once(
+                            FinalizationReason::MaxTokens,
+                            outcome.assistant_text,
+                            guards.counted_turns(),
+                            StopReason::MaxTokens,
+                        )
+                        .await;
                 }
-            } else {
-                // Terminal mode: use interactive confirmation
-                match execute_tool_calls(
-                    &self.tools,
-                    &executable_tool_calls,
-                    &self.confirmer,
-                    self.hooks.as_mut(),
-                    self.compaction_level,
-                    self.toon_enabled,
-                )
-                .await
-                {
-                    Ok(o) => (o.results, o.modifiers),
-                    Err(ExecutionControl::Quit) => {
-                        self.save_session();
-                        return Err(AgentError::UserAborted);
-                    }
+                TurnOutcome::EmptyFinal(outcome) => {
+                    return self
+                        .finalize_once(
+                            FinalizationReason::EmptyFinal,
+                            outcome.assistant_text,
+                            guards.counted_turns(),
+                            StopReason::EndTurn,
+                        )
+                        .await;
                 }
             };
 
-            let mut executable_results = executable_results.into_iter();
-            let mut executable_modifiers = executable_modifiers.into_iter();
-            let mut tool_results = Vec::with_capacity(tool_calls.len());
-            let mut tool_modifiers = Vec::with_capacity(tool_calls.len());
-
-            for (call, reason) in tool_calls.iter().zip(&malformed_reasons) {
-                if let Some(reason) = reason {
-                    let ContentBlock::ToolUse { id, name, .. } = call else {
-                        continue;
-                    };
-                    tracing::warn!(
-                        target: "aion_agent",
-                        tool_call_id = %id,
-                        tool = %name,
-                        reason = reason.log_reason(),
-                        "generated synthetic error result for malformed tool call"
-                    );
-                    tool_results.push(synthetic_malformed_tool_result(id.clone(), *reason));
-                    tool_modifiers.push(None);
-                } else {
-                    tool_results.push(
-                        executable_results
-                            .next()
-                            .expect("tool execution result missing for executable tool call"),
-                    );
-                    tool_modifiers.push(
-                        executable_modifiers
-                            .next()
-                            .expect("tool execution modifier missing for executable tool call"),
-                    );
-                }
-            }
+            let ToolRoundOutput {
+                tool_results,
+                tool_modifiers,
+                tool_call_malformed_fingerprint,
+                tool_call_failure_round,
+            } = self
+                .execute_tool_round(&tool_calls, &assistant_text)
+                .await?;
 
             // Apply any context modifiers from skill executions before the next turn.
             self.apply_context_modifiers(&tool_modifiers);
 
-            // Display tool results
-            for result in &tool_results {
-                if let ContentBlock::ToolResult {
-                    tool_use_id,
-                    content,
-                    is_error,
-                } = result
-                {
-                    let tool_name = tool_calls
-                        .iter()
-                        .find_map(|c| {
-                            if let ContentBlock::ToolUse { id, name, .. } = c
-                                && id == tool_use_id
-                            {
-                                return Some(name.as_str());
-                            }
-                            None
-                        })
-                        .unwrap_or("unknown");
-                    let status = if *is_error { "error" } else { "completed" };
-                    if tool_use_id.trim().is_empty() {
+            self.emit_tool_results(&tool_calls, &tool_results);
+
+            self.messages.push(Message::now(Role::User, tool_results));
+
+            // Save session after each tool round.
+            self.save_session();
+
+            match guards.after_tool_round(tool_call_malformed_fingerprint, tool_call_failure_round)
+            {
+                TurnGuardAction::Continue => {}
+                TurnGuardAction::Finalize => {
+                    return self
+                        .finalize_once(
+                            FinalizationReason::TurnBudget,
+                            String::new(),
+                            guards.counted_turns(),
+                            StopReason::MaxTurns,
+                        )
+                        .await;
+                }
+                TurnGuardAction::Stop(err) => return Err(err),
+            }
+        }
+    }
+
+    /// Build the next provider request, applying plan-mode tool/system filtering
+    /// and recording the prompt state for cache diagnostics.
+    fn build_request(&mut self, kind: TurnKind) -> LlmRequest {
+        // Build tool list: filter based on plan mode state
+        let tools = if kind.disable_tools() {
+            Vec::new()
+        } else if self.plan_state.is_active {
+            // Plan mode: only Info-category tools (excluding EnterPlanMode)
+            self.tools.to_tool_defs_filtered(|t| {
+                t.category() == ToolCategory::Info && t.name() != "EnterPlanMode"
+            })
+        } else {
+            // Normal mode: all tools except ExitPlanMode
+            self.tools
+                .to_tool_defs_filtered(|t| t.name() != "ExitPlanMode")
+        };
+
+        // Build system prompt: append plan mode instructions when active
+        let system = if self.plan_state.is_active {
+            format!(
+                "{}\n\n{}",
+                self.system_prompt,
+                plan_prompt::plan_mode_instructions()
+            )
+        } else {
+            self.system_prompt.clone()
+        };
+
+        // Record prompt state for cache diagnostics
+        self.cache_detector.record_request(&system, &tools);
+
+        let mut messages = self.messages.clone();
+        if let Some(prompt) = kind.control_prompt() {
+            messages.push(Message::now(
+                Role::User,
+                vec![ContentBlock::Text {
+                    text: prompt.to_string(),
+                }],
+            ));
+        }
+
+        LlmRequest {
+            model: self.model.clone(),
+            system,
+            messages,
+            tools,
+            max_tokens: self.max_tokens,
+            thinking: self.thinking.clone(),
+            reasoning_effort: self.current_reasoning_effort.clone(),
+        }
+    }
+
+    /// Classify, execute and re-merge one model turn's tool calls.
+    ///
+    /// Malformed calls get synthetic error results; the rest are executed via
+    /// the approval (JSON stream) or interactive (terminal) path. Results and
+    /// skill modifiers are interleaved back into the original call order.
+    /// `assistant_text` is the visible text from the same turn, used only to
+    /// classify an all-error round for the consecutive-failure breaker.
+    ///
+    /// A `Quit` from tool execution is surfaced as `AgentError::UserAborted`
+    /// after saving the session.
+    async fn execute_tool_round(
+        &mut self,
+        tool_calls: &[ContentBlock],
+        assistant_text: &str,
+    ) -> Result<ToolRoundOutput, AgentError> {
+        let tool_call_malformed_reasons: Vec<_> = tool_calls
+            .iter()
+            .map(|call| {
+                let ContentBlock::ToolUse { id, name, .. } = call else {
+                    return None;
+                };
+                tool_call_malformed_reason(id, name)
+            })
+            .collect();
+        let tool_call_malformed_fingerprint =
+            tool_call_malformed_fingerprint(tool_calls, &tool_call_malformed_reasons);
+        let executable_tool_calls: Vec<_> = tool_calls
+            .iter()
+            .zip(&tool_call_malformed_reasons)
+            .filter(|(_, reason)| reason.is_none())
+            .map(|(call, _)| call.clone())
+            .collect();
+
+        let (executable_results, executable_modifiers) = if executable_tool_calls.is_empty() {
+            (Vec::new(), Vec::new())
+        } else if let Some(ref approval_mgr) = self.approval_manager {
+            // JSON stream mode: use protocol-based approval
+            let writer = self
+                .protocol_writer
+                .as_ref()
+                .expect("protocol writer required for approval");
+            let auto_approve = self.confirmer.lock().unwrap().is_auto_approve();
+            match execute_tool_calls_with_approval(
+                &self.tools,
+                &executable_tool_calls,
+                approval_mgr,
+                writer,
+                &self.current_msg_id,
+                auto_approve,
+                &self.allow_list,
+                self.hooks.as_mut(),
+                self.compaction_level,
+                self.toon_enabled,
+            )
+            .await
+            {
+                Ok(o) => (o.results, o.modifiers),
+                Err(ExecutionControl::Quit) => {
+                    self.save_session();
+                    return Err(AgentError::UserAborted);
+                }
+            }
+        } else {
+            // Terminal mode: use interactive confirmation
+            match execute_tool_calls(
+                &self.tools,
+                &executable_tool_calls,
+                &self.confirmer,
+                self.hooks.as_mut(),
+                self.compaction_level,
+                self.toon_enabled,
+            )
+            .await
+            {
+                Ok(o) => (o.results, o.modifiers),
+                Err(ExecutionControl::Quit) => {
+                    self.save_session();
+                    return Err(AgentError::UserAborted);
+                }
+            }
+        };
+
+        let (tool_results, tool_modifiers) = merge_tool_results(
+            tool_calls,
+            &tool_call_malformed_reasons,
+            executable_results,
+            executable_modifiers,
+        );
+
+        let tool_call_failure_round = tool_call_malformed_fingerprint.is_none()
+            && assistant_text.trim().is_empty()
+            && !tool_results.is_empty()
+            && tool_results
+                .iter()
+                .all(|result| matches!(result, ContentBlock::ToolResult { is_error: true, .. }));
+
+        Ok(ToolRoundOutput {
+            tool_results,
+            tool_modifiers,
+            tool_call_malformed_fingerprint,
+            tool_call_failure_round,
+        })
+    }
+
+    /// Emit each tool result to the output sink, resolving the tool name from
+    /// the originating `tool_calls` for display and logging.
+    fn emit_tool_results(&self, tool_calls: &[ContentBlock], tool_results: &[ContentBlock]) {
+        for result in tool_results {
+            if let ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } = result
+            {
+                let tool_name = tool_calls
+                    .iter()
+                    .find_map(|c| {
+                        if let ContentBlock::ToolUse { id, name, .. } = c
+                            && id == tool_use_id
+                        {
+                            return Some(name.as_str());
+                        }
+                        None
+                    })
+                    .unwrap_or("unknown");
+                let status = if *is_error { "error" } else { "completed" };
+                if tool_use_id.trim().is_empty() {
+                    tracing::error!(
+                        target: "aion_agent",
+                        tool = %tool_name,
+                        status,
+                        "tool result has empty tool_use_id"
+                    );
+                } else {
+                    tracing::debug!(
+                        target: "aion_agent",
+                        tool_use_id = %tool_use_id,
+                        tool = %tool_name,
+                        status,
+                        "tool result emitted"
+                    );
+                }
+                self.output
+                    .emit_tool_result(tool_use_id, tool_name, *is_error, content);
+            }
+        }
+    }
+
+    async fn run_turn(&mut self, kind: TurnKind) -> Result<StreamOutcome, AgentError> {
+        // Run multi-level compaction before each API call.
+        // On the first model turn last_input_tokens is 0 so neither
+        // autocompact nor emergency will fire.
+        self.run_compaction().await?;
+        let request = self.build_request(kind);
+        let mut rx = self.provider.stream(&request).await?;
+        let outcome = self.consume_stream(&mut rx).await?;
+        self.record_turn_usage(&outcome.usage);
+        Ok(outcome)
+    }
+
+    async fn finalize_once(
+        &mut self,
+        reason: FinalizationReason,
+        prefix_text: String,
+        counted_turns: usize,
+        fallback_stop_reason: StopReason,
+    ) -> Result<AgentResult, AgentError> {
+        let outcome = self.run_turn(TurnKind::Finalization(reason)).await?;
+        let combined_text = format!("{}{}", prefix_text, outcome.assistant_text);
+        let is_success = outcome.tool_calls.is_empty()
+            && outcome.stop_reason == StopReason::EndTurn
+            && !outcome.assistant_text.trim().is_empty();
+
+        if is_success {
+            let assistant_content = build_assistant_content(&outcome);
+            self.messages
+                .push(Message::now(Role::Assistant, assistant_content));
+            self.save_session();
+            return Ok(AgentResult {
+                text: combined_text,
+                stop_reason: StopReason::EndTurn,
+                usage: self.total_usage.clone(),
+                turns: counted_turns,
+            });
+        }
+
+        let fallback = match reason {
+            FinalizationReason::TurnBudget => {
+                "Stopped after reaching the turn budget before the model produced a final answer."
+            }
+            FinalizationReason::MaxTokens => {
+                "The response was cut off by the token limit and could not be completed automatically."
+            }
+            FinalizationReason::EmptyFinal => {
+                "The model finished without visible answer text after one retry."
+            }
+        };
+        self.output.emit_error(fallback);
+        let fallback_text = if combined_text.trim().is_empty() {
+            fallback.to_string()
+        } else {
+            combined_text
+        };
+        self.messages.push(Message::now(
+            Role::Assistant,
+            vec![ContentBlock::Text {
+                text: fallback_text.clone(),
+            }],
+        ));
+        self.save_session();
+        Ok(AgentResult {
+            text: fallback_text,
+            stop_reason: fallback_stop_reason,
+            usage: self.total_usage.clone(),
+            turns: counted_turns,
+        })
+    }
+
+    /// Drain one provider stream into a [`StreamOutcome`].
+    ///
+    /// Emits text/thinking/tool-call events to the output sink as they arrive
+    /// and accumulates the assistant text, thinking block, tool calls, stop
+    /// reason and usage for the caller. Returns early on `LlmEvent::Error`.
+    async fn consume_stream(
+        &self,
+        rx: &mut tokio::sync::mpsc::Receiver<LlmEvent>,
+    ) -> Result<StreamOutcome, AgentError> {
+        let mut assistant_text = String::new();
+        let mut thinking_text = String::new();
+        let mut thinking_signature: Option<String> = None;
+        let mut tool_calls: Vec<ContentBlock> = Vec::new();
+        let mut stop_reason = StopReason::EndTurn;
+        let mut usage = TokenUsage::default();
+
+        while let Some(event) = rx.recv().await {
+            match event {
+                LlmEvent::TextDelta(text) => {
+                    self.output.emit_text_delta(&text, &self.current_msg_id);
+                    assistant_text.push_str(&text);
+                }
+                LlmEvent::ToolUse {
+                    id,
+                    name,
+                    input,
+                    extra,
+                } => {
+                    if id.trim().is_empty() {
                         tracing::error!(
                             target: "aion_agent",
-                            tool = %tool_name,
-                            status,
-                            "tool result has empty tool_use_id"
+                            tool = %name,
+                            "provider emitted tool call with empty tool_use_id"
                         );
                     } else {
                         tracing::debug!(
                             target: "aion_agent",
-                            tool_use_id = %tool_use_id,
-                            tool = %tool_name,
-                            status,
-                            "tool result emitted"
+                            tool_use_id = %id,
+                            tool = %name,
+                            "provider tool call received"
                         );
                     }
-                    self.output
-                        .emit_tool_result(tool_use_id, tool_name, *is_error, content);
+                    let input_str = serde_json::to_string(&input).unwrap_or_default();
+                    self.output.emit_tool_call(&id, &name, &input_str);
+                    tool_calls.push(ContentBlock::ToolUse {
+                        id,
+                        name,
+                        input,
+                        extra,
+                    });
+                }
+                LlmEvent::ThinkingDelta(text) => {
+                    self.output.emit_thinking(&text, &self.current_msg_id);
+                    thinking_text.push_str(&text);
+                }
+                LlmEvent::ThinkingSignature(signature) => {
+                    thinking_signature = Some(signature);
+                }
+                LlmEvent::Done {
+                    stop_reason: sr,
+                    usage: u,
+                } => {
+                    stop_reason = sr;
+                    usage = u;
+                }
+                LlmEvent::Error(e) => {
+                    return Err(AgentError::ApiError(e));
                 }
             }
+        }
 
-            self.messages.push(Message::now(Role::User, tool_results));
+        Ok(StreamOutcome {
+            assistant_text,
+            thinking_text,
+            thinking_signature,
+            tool_calls,
+            stop_reason,
+            usage,
+        })
+    }
 
-            // Save session after each turn
-            self.save_session();
-            let repeated_malformed_count =
-                repeated_malformed_tool_calls.observe(malformed_only_fingerprint);
-            if self.max_malformed_tool_call_turns > 0
-                && repeated_malformed_count >= self.max_malformed_tool_call_turns
-            {
-                tracing::warn!(
-                    target: "aion_agent",
-                    count = repeated_malformed_count,
-                    limit = self.max_malformed_tool_call_turns,
-                    "stopping repeated malformed tool call loop"
-                );
-                return Err(AgentError::RepeatedMalformedToolCall {
-                    count: repeated_malformed_count,
-                    limit: self.max_malformed_tool_call_turns,
-                });
+    /// Fold one turn's token usage into the running totals and update the
+    /// compaction watermark and cache-break diagnostics.
+    fn record_turn_usage(&mut self, turn_usage: &TokenUsage) {
+        self.total_usage.input_tokens += turn_usage.input_tokens;
+        self.total_usage.output_tokens += turn_usage.output_tokens;
+        self.total_usage.cache_creation_tokens += turn_usage.cache_creation_tokens;
+        self.total_usage.cache_read_tokens += turn_usage.cache_read_tokens;
+
+        // Track per-turn input tokens for compaction watermark.
+        // Use max(provider_reported, local_estimate) as a safety net:
+        // some providers (e.g. DeepSeek with prefix caching) underreport
+        // prompt_tokens, causing compaction to never trigger.
+        let local_estimate = estimate::estimate_tokens_from_messages(&self.messages);
+        let effective_watermark = turn_usage.input_tokens.max(local_estimate);
+
+        if local_estimate > turn_usage.input_tokens
+            && local_estimate.saturating_sub(turn_usage.input_tokens) > 10_000
+        {
+            self.output.emit_info(&format!(
+                "Token watermark override: provider={}, local_estimate={}, using={}",
+                turn_usage.input_tokens, local_estimate, effective_watermark
+            ));
+        }
+
+        self.compact_state.last_input_tokens = effective_watermark;
+
+        // Cache break detection
+        let cache_stats = CacheStats {
+            input_tokens: turn_usage.input_tokens,
+            cache_read_tokens: turn_usage.cache_read_tokens,
+            cache_creation_tokens: turn_usage.cache_creation_tokens,
+        };
+        if let Some(diagnostic) = self.cache_detector.check_response(cache_stats) {
+            match &diagnostic {
+                CacheDiagnostic::FullMiss { cause } => {
+                    self.output
+                        .emit_error(&format!("Cache full miss: {cause:?}"));
+                }
+                CacheDiagnostic::PartialMiss { hit_rate, cause } => {
+                    if self.compact_config.cache_diagnostics {
+                        self.output.emit_info(&format!(
+                            "Cache: {:.0}% hit rate (cause: {cause:?})",
+                            hit_rate * 100.0
+                        ));
+                    }
+                }
+                CacheDiagnostic::Healthy { hit_rate } => {
+                    if self.compact_config.cache_diagnostics {
+                        self.output
+                            .emit_info(&format!("Cache: {:.0}% hit rate", hit_rate * 100.0));
+                    }
+                }
             }
-            turn += 1;
         }
     }
 
@@ -957,15 +958,157 @@ impl AgentEngine {
 
         Ok(())
     }
+}
 
-    /// Run stop hooks when the agent session ends
-    pub async fn run_stop_hooks(&self) {
-        if let Some(hook_engine) = &self.hooks {
-            let messages = hook_engine.run_stop().await;
-            for msg in messages {
-                tracing::info!(target: "aion_agent", hook_message = %msg, "stop hook output");
+impl AgentEngine {
+    /// Initialize a new session for this engine run
+    pub fn init_session(
+        &mut self,
+        provider_name: &str,
+        cwd: &str,
+        session_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        if let Some(mgr) = &self.session_manager {
+            let session = mgr.create(provider_name, &self.model, cwd, session_id)?;
+            tracing::info!(target: "aion_agent", session_id = %session.id, provider = %provider_name, model = %self.model, "session started");
+            self.current_session = Some(session);
+        }
+        Ok(())
+    }
+
+    /// Default thinking budget when "enabled" is requested without a specific budget.
+    const DEFAULT_THINKING_BUDGET: u32 = 10_000;
+
+    /// Apply a runtime config update received from the protocol layer.
+    ///
+    /// Returns a list of human-readable change descriptions for the Info event.
+    /// Empty list means no fields were changed.
+    pub fn apply_config_update(
+        &mut self,
+        model: Option<String>,
+        thinking: Option<String>,
+        thinking_budget: Option<u32>,
+        effort: Option<String>,
+        compaction: Option<String>,
+    ) -> Vec<String> {
+        let mut changes = Vec::new();
+
+        if let Some(new_model) = model {
+            let old = std::mem::replace(&mut self.model, new_model.clone());
+            changes.push(format!("model: {old} → {new_model}"));
+        }
+
+        if let Some(thinking_str) = thinking {
+            if !self.compat.supports_thinking() {
+                changes.push("thinking: not supported by current provider".to_string());
+            } else {
+                match thinking_str.as_str() {
+                    "enabled" => {
+                        let budget = thinking_budget.unwrap_or(Self::DEFAULT_THINKING_BUDGET);
+                        self.thinking = Some(ThinkingConfig::Enabled {
+                            budget_tokens: budget,
+                        });
+                        changes.push(format!("thinking: enabled (budget: {budget})"));
+                    }
+                    "disabled" => {
+                        self.thinking = Some(ThinkingConfig::Disabled);
+                        changes.push("thinking: disabled".to_string());
+                    }
+                    other => {
+                        changes.push(format!("thinking: ignored invalid value \"{other}\""));
+                    }
+                }
+            }
+        } else if let Some(new_budget) = thinking_budget
+            && let Some(ThinkingConfig::Enabled { budget_tokens }) = &mut self.thinking
+        {
+            *budget_tokens = new_budget;
+            changes.push(format!("thinking budget: {new_budget}"));
+        }
+
+        if let Some(new_effort) = effort {
+            if new_effort.is_empty() {
+                self.current_reasoning_effort = None;
+                changes.push("effort: cleared".to_string());
+            } else if !self.compat.supports_effort() {
+                changes.push("effort: not supported by current provider".to_string());
+            } else {
+                let levels = self.compat.effort_levels();
+                if !levels.is_empty() && !levels.iter().any(|l| l == &new_effort) {
+                    changes.push(format!(
+                        "effort: invalid level \"{}\" (valid: {})",
+                        new_effort,
+                        levels.join(", ")
+                    ));
+                } else {
+                    let old = self
+                        .current_reasoning_effort
+                        .replace(new_effort.clone())
+                        .unwrap_or_else(|| "none".to_string());
+                    changes.push(format!("effort: {old} → {new_effort}"));
+                }
             }
         }
+
+        if let Some(ref level_str) = compaction {
+            match level_str.parse::<aion_compact::CompactionLevel>() {
+                Ok(new_level) => {
+                    let old = self.compaction_level.to_string();
+                    self.compaction_level = new_level;
+                    changes.push(format!("compaction: {old} → {new_level}"));
+                }
+                Err(e) => {
+                    changes.push(format!("compaction: invalid ({e})"));
+                }
+            }
+        }
+
+        changes
+    }
+
+    /// Handle a slash command. Returns `None` if input is not a recognized command.
+    pub async fn handle_command(
+        &mut self,
+        input: &str,
+    ) -> Option<Result<crate::commands::CommandResult, anyhow::Error>> {
+        let input = input.trim();
+        let without_slash = input.strip_prefix('/')?;
+        let (name, args) = match without_slash.split_once(char::is_whitespace) {
+            Some((n, rest)) => (n, rest.trim()),
+            None => (without_slash, ""),
+        };
+
+        let cmd = self.commands.find(name)?;
+
+        // We need to borrow self mutably for CommandContext while also
+        // borrowing self.commands immutably (already done above via find()).
+        // Use a raw pointer to break the borrow conflict — safe because
+        // the command is not modified during execution.
+        let cmd_ptr = cmd as *const dyn crate::commands::SlashCommand;
+
+        let mut ctx = crate::commands::CommandContext {
+            messages: &mut self.messages,
+            compact_state: &mut self.compact_state,
+            compact_config: &self.compact_config,
+            provider: Arc::clone(&self.provider),
+            model: &self.model,
+            output: self.output.as_ref(),
+            registry: &self.commands,
+        };
+
+        // SAFETY: cmd_ptr points to a command inside self.commands which is only
+        // borrowed immutably and not mutated during execute().
+        let result = unsafe { &*cmd_ptr }.execute(&mut ctx, args).await;
+        Some(result)
+    }
+
+    /// Return metadata for all registered slash commands.
+    pub fn slash_command_list(&self) -> Vec<(String, String)> {
+        self.commands
+            .all()
+            .iter()
+            .map(|cmd| (cmd.name().to_string(), cmd.description().to_string()))
+            .collect()
     }
 
     /// Apply context modifiers collected from skill tool executions.
@@ -1074,6 +1217,50 @@ impl AgentEngine {
         self.messages.push(Message::now(Role::User, result_blocks));
         self.save_session();
     }
+
+    /// Run stop hooks when the agent session ends
+    pub async fn run_stop_hooks(&self) {
+        if let Some(hook_engine) = &self.hooks {
+            let messages = hook_engine.run_stop().await;
+            for msg in messages {
+                tracing::info!(target: "aion_agent", hook_message = %msg, "stop hook output");
+            }
+        }
+    }
+}
+
+/// Result of running one model turn's tool calls: the per-call results and
+/// skill modifiers (aligned 1:1 with the originating `tool_calls`), plus the
+/// loop-guard signals derived from this round.
+struct ToolRoundOutput {
+    tool_results: Vec<ContentBlock>,
+    tool_modifiers: Vec<Option<ContextModifier>>,
+    /// `Some` only when every tool call in the round was malformed; feeds the
+    /// tool-call-malformed breaker.
+    tool_call_malformed_fingerprint: Option<ToolCallMalformedFingerprint>,
+    /// True when this round produced executable (non-malformed) tool calls
+    /// that all errored and the model emitted no visible text; feeds the
+    /// consecutive-tool-call-failure breaker.
+    tool_call_failure_round: bool,
+}
+
+/// Assemble the assistant message content blocks (thinking, text, tool calls)
+/// from a completed [`StreamOutcome`], preserving the canonical block order.
+fn build_assistant_content(outcome: &StreamOutcome) -> Vec<ContentBlock> {
+    let mut content: Vec<ContentBlock> = Vec::new();
+    if !outcome.thinking_text.is_empty() || outcome.thinking_signature.is_some() {
+        content.push(ContentBlock::Thinking {
+            thinking: outcome.thinking_text.clone(),
+            signature: outcome.thinking_signature.clone(),
+        });
+    }
+    if !outcome.assistant_text.is_empty() {
+        content.push(ContentBlock::Text {
+            text: outcome.assistant_text.clone(),
+        });
+    }
+    content.extend(outcome.tool_calls.iter().cloned());
+    content
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,8 +1311,9 @@ mod tests_set_config {
             system_prompt: String::new(),
             model: model.to_string(),
             max_tokens: 4096,
-            max_turns: Some(10),
-            max_malformed_tool_call_turns: 3,
+            max_turns_per_run: Some(10),
+            max_tool_call_malformed_turns: 3,
+            max_tool_call_failure_turns: 3,
             total_usage: Default::default(),
             thinking: None,
             compat: aion_config::compat::ProviderCompat::anthropic_defaults(),
@@ -1454,8 +1642,9 @@ mod tests_phase6 {
             system_prompt: String::new(),
             model: model.to_string(),
             max_tokens: 4096,
-            max_turns: Some(10),
-            max_malformed_tool_call_turns: 3,
+            max_turns_per_run: Some(10),
+            max_tool_call_malformed_turns: 3,
+            max_tool_call_failure_turns: 3,
             total_usage: Default::default(),
             thinking: None,
             compat: aion_config::compat::ProviderCompat::anthropic_defaults(),
@@ -1696,8 +1885,9 @@ mod tests_compact {
             system_prompt: String::new(),
             model: "test-model".to_string(),
             max_tokens: 4096,
-            max_turns: Some(10),
-            max_malformed_tool_call_turns: 3,
+            max_turns_per_run: Some(10),
+            max_tool_call_malformed_turns: 3,
+            max_tool_call_failure_turns: 3,
             total_usage: Default::default(),
             thinking: None,
             compat: aion_config::compat::ProviderCompat::anthropic_defaults(),
@@ -2039,8 +2229,9 @@ mod tests_plan_mode {
             system_prompt: String::new(),
             model: "test-model".to_string(),
             max_tokens: 4096,
-            max_turns: Some(10),
-            max_malformed_tool_call_turns: 3,
+            max_turns_per_run: Some(10),
+            max_tool_call_malformed_turns: 3,
+            max_tool_call_failure_turns: 3,
             total_usage: Default::default(),
             thinking: None,
             compat: aion_config::compat::ProviderCompat::anthropic_defaults(),
@@ -2253,8 +2444,9 @@ mod tests_handle_command {
             system_prompt: String::new(),
             model: "test-model".to_string(),
             max_tokens: 4096,
-            max_turns: Some(10),
-            max_malformed_tool_call_turns: 3,
+            max_turns_per_run: Some(10),
+            max_tool_call_malformed_turns: 3,
+            max_tool_call_failure_turns: 3,
             total_usage: Default::default(),
             thinking: None,
             compat: aion_config::compat::ProviderCompat::anthropic_defaults(),
@@ -2368,5 +2560,265 @@ mod tests_handle_command {
         assert!(names.contains(&"compact"));
         assert!(names.contains(&"clear"));
         assert!(names.contains(&"quit"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Refactor unit tests — merge_tool_results() / TurnGuards
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests_loop_helpers {
+    use aion_types::message::{ContentBlock, StopReason, TokenUsage};
+    use serde_json::json;
+
+    use super::{AgentError, merge_tool_results, tool_call_malformed_fingerprint};
+    use crate::stream::StreamOutcome;
+    use crate::tool_call::{DEFAULT_MAX_TOOL_CALL_FAILURE, ToolCallMalformedReason};
+    use crate::turn::{FinalizationReason, TurnGuardAction, TurnGuards, TurnKind, TurnOutcome};
+
+    fn tool_use(id: &str, name: &str) -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: id.to_string(),
+            name: name.to_string(),
+            input: json!({}),
+            extra: None,
+        }
+    }
+
+    fn executed_result(id: &str) -> ContentBlock {
+        ContentBlock::ToolResult {
+            tool_use_id: id.to_string(),
+            content: format!("ok:{id}"),
+            is_error: false,
+        }
+    }
+
+    /// Mixed malformed + executable calls must re-interleave so each result
+    /// lands at its originating call's index, with executed results consumed
+    /// in order for the non-malformed slots.
+    #[test]
+    fn merge_interleaves_malformed_and_executed_in_call_order() {
+        let calls = vec![
+            tool_use("bad", ""),
+            tool_use("ok1", "Read"),
+            tool_use("ok2", "Glob"),
+        ];
+        let reasons = vec![Some(ToolCallMalformedReason::EmptyFunctionName), None, None];
+        let executed = vec![executed_result("ok1"), executed_result("ok2")];
+        let modifiers = vec![None, None];
+
+        let (results, mods) = merge_tool_results(&calls, &reasons, executed, modifiers);
+
+        assert_eq!(results.len(), 3);
+        // Slot 0: synthetic malformed error result for "bad".
+        assert!(matches!(
+            &results[0],
+            ContentBlock::ToolResult { tool_use_id, is_error: true, .. } if tool_use_id == "bad"
+        ));
+        // Slots 1,2: executed results, consumed in order.
+        assert!(matches!(
+            &results[1],
+            ContentBlock::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == "ok1"
+        ));
+        assert!(matches!(
+            &results[2],
+            ContentBlock::ToolResult { tool_use_id, is_error: false, .. } if tool_use_id == "ok2"
+        ));
+        assert_eq!(mods.len(), 3);
+    }
+
+    #[test]
+    fn merge_all_malformed_needs_no_executed_results() {
+        let calls = vec![tool_use("bad1", ""), tool_use("bad2", "")];
+        let reasons = vec![
+            Some(ToolCallMalformedReason::EmptyFunctionName),
+            Some(ToolCallMalformedReason::EmptyFunctionName),
+        ];
+
+        let (results, mods) = merge_tool_results(&calls, &reasons, Vec::new(), Vec::new());
+
+        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|r| matches!(r, ContentBlock::ToolResult { is_error: true, .. }))
+        );
+        assert!(mods.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn turn_budget_reached_respects_limit_and_none() {
+        let mut guards = TurnGuards::new(Some(2), 3, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        assert_eq!(guards.turn_budget_reached(), None);
+        guards.record_counted_turn();
+        guards.record_counted_turn();
+        assert_eq!(guards.turn_budget_reached(), Some(2));
+
+        // No limit configured → never reached.
+        let mut unlimited = TurnGuards::new(None, 3, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        for _ in 0..1_000 {
+            unlimited.record_counted_turn();
+        }
+        assert_eq!(unlimited.turn_budget_reached(), None);
+    }
+
+    #[test]
+    fn after_tool_round_trips_consecutive_tool_call_failure_breaker() {
+        let mut guards = TurnGuards::new(Some(100), 3, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        // First N-1 tool-call-failure rounds: no stop yet.
+        for _ in 0..DEFAULT_MAX_TOOL_CALL_FAILURE - 1 {
+            assert!(matches!(
+                guards.after_tool_round(None, true),
+                TurnGuardAction::Continue
+            ));
+        }
+        // The Nth consecutive tool-call-failure round trips the breaker.
+        assert!(matches!(
+            guards.after_tool_round(None, true),
+            TurnGuardAction::Stop(AgentError::ToolCallFailures { .. })
+        ));
+    }
+
+    #[test]
+    fn after_tool_round_resets_tool_call_failure_streak_on_success() {
+        let mut guards = TurnGuards::new(Some(100), 3, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        assert!(matches!(
+            guards.after_tool_round(None, true),
+            TurnGuardAction::Continue
+        ));
+        // A non-error tool round resets the streak.
+        assert!(matches!(
+            guards.after_tool_round(None, false),
+            TurnGuardAction::Continue
+        ));
+        assert_eq!(guards.tool_call_failure_count(), 0);
+        // So a single subsequent tool-call-failure round must not trip the breaker.
+        assert!(matches!(
+            guards.after_tool_round(None, true),
+            TurnGuardAction::Continue
+        ));
+    }
+
+    #[test]
+    fn after_tool_round_requests_finalize_when_budget_is_exhausted() {
+        let mut guards = TurnGuards::new(Some(1), 3, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        guards.record_counted_turn();
+        assert!(matches!(
+            guards.after_tool_round(None, false),
+            TurnGuardAction::Finalize
+        ));
+    }
+
+    #[test]
+    fn after_tool_round_stop_breaker_takes_priority_over_finalize() {
+        let mut guards = TurnGuards::new(Some(1), 1, DEFAULT_MAX_TOOL_CALL_FAILURE);
+        guards.record_counted_turn();
+
+        let calls = vec![tool_use("bad", "")];
+        let reasons = vec![Some(ToolCallMalformedReason::EmptyFunctionName)];
+        let fingerprint = tool_call_malformed_fingerprint(&calls, &reasons);
+
+        assert!(matches!(
+            guards.after_tool_round(fingerprint, false),
+            TurnGuardAction::Stop(AgentError::ToolCallMalformed { count: 1, limit: 1 })
+        ));
+    }
+
+    #[test]
+    fn turn_kind_finalization_has_control_prompt_and_disables_tools() {
+        assert!(TurnKind::Normal.control_prompt().is_none());
+        assert!(!TurnKind::Normal.disable_tools());
+
+        let kind = TurnKind::Finalization(FinalizationReason::TurnBudget);
+        assert!(kind.disable_tools());
+        assert!(
+            kind.control_prompt()
+                .expect("finalization must have a control prompt")
+                .contains("Do not call any more tools")
+        );
+    }
+
+    #[test]
+    fn turn_kind_max_tokens_prompt_names_truncation() {
+        let prompt = TurnKind::Finalization(FinalizationReason::MaxTokens)
+            .control_prompt()
+            .expect("max token continuation must have a prompt");
+
+        assert!(prompt.contains("previous response was cut off"));
+        assert!(prompt.contains("Finish the answer"));
+    }
+
+    #[test]
+    fn turn_kind_empty_final_prompt_requests_visible_answer() {
+        let prompt = TurnKind::Finalization(FinalizationReason::EmptyFinal)
+            .control_prompt()
+            .expect("empty final nudge must have a prompt");
+
+        assert!(prompt.contains("visible answer text"));
+        assert!(prompt.contains("Do not send reasoning only"));
+    }
+
+    fn stream_outcome(
+        assistant_text: &str,
+        stop_reason: StopReason,
+        tool_calls: Vec<ContentBlock>,
+    ) -> StreamOutcome {
+        StreamOutcome {
+            assistant_text: assistant_text.to_string(),
+            thinking_text: String::new(),
+            thinking_signature: None,
+            tool_calls,
+            stop_reason,
+            usage: TokenUsage::default(),
+        }
+    }
+
+    #[test]
+    fn turn_outcome_classifies_tool_round_before_final_text() {
+        let outcome = stream_outcome(
+            "I will inspect this.",
+            StopReason::EndTurn,
+            vec![tool_use("call-1", "Read")],
+        );
+
+        assert!(matches!(
+            TurnOutcome::from_stream(outcome),
+            TurnOutcome::ToolRound(_)
+        ));
+    }
+
+    #[test]
+    fn turn_outcome_classifies_visible_end_turn_as_final() {
+        let outcome = stream_outcome("Done", StopReason::EndTurn, Vec::new());
+
+        assert!(matches!(
+            TurnOutcome::from_stream(outcome),
+            TurnOutcome::Final(_)
+        ));
+    }
+
+    #[test]
+    fn turn_outcome_classifies_max_tokens_as_truncated_even_with_text() {
+        let outcome = stream_outcome(
+            "I will now write the file",
+            StopReason::MaxTokens,
+            Vec::new(),
+        );
+
+        assert!(matches!(
+            TurnOutcome::from_stream(outcome),
+            TurnOutcome::Truncated(_)
+        ));
+    }
+
+    #[test]
+    fn turn_outcome_classifies_empty_end_turn_as_empty_final() {
+        let outcome = stream_outcome("   ", StopReason::EndTurn, Vec::new());
+
+        assert!(matches!(
+            TurnOutcome::from_stream(outcome),
+            TurnOutcome::EmptyFinal(_)
+        ));
     }
 }

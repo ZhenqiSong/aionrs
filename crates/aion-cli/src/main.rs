@@ -46,13 +46,17 @@ struct Cli {
     #[arg(long)]
     max_tokens: Option<u32>,
 
-    /// Max agent loop turns
+    /// Max model turns per run. Defaults to 20; 0 disables.
     #[arg(long)]
     max_turns: Option<usize>,
 
-    /// Max consecutive same malformed-only tool-call turns before stopping. 0 disables.
+    /// Max consecutive same tool-call-malformed rounds before stopping. 0 disables.
     #[arg(long)]
-    max_malformed_tool_call_turns: Option<usize>,
+    max_tool_call_malformed_turns: Option<usize>,
+
+    /// Max consecutive tool-call-failure rounds before stopping. 0 disables.
+    #[arg(long)]
+    max_tool_call_failure_turns: Option<usize>,
 
     /// Custom system prompt
     #[arg(long)]
@@ -179,7 +183,8 @@ async fn main() -> anyhow::Result<()> {
         model: cli.model,
         max_tokens: cli.max_tokens,
         max_turns: cli.max_turns,
-        max_malformed_tool_call_turns: cli.max_malformed_tool_call_turns,
+        max_tool_call_malformed_turns: cli.max_tool_call_malformed_turns,
+        max_tool_call_failure_turns: cli.max_tool_call_failure_turns,
         system_prompt: cli.system_prompt,
         profile: cli.profile,
         auto_approve: cli.auto_approve,

@@ -46,23 +46,35 @@ aionrs --help
 
 ## Runtime Limits
 
-`max_turns` is the broad agent-loop limit. `max_malformed_tool_call_turns`
-stops repeated same malformed-only tool-call turns earlier; it defaults to `3`.
-Set it to `0` to disable this breaker and rely on `max_turns`.
+`max_turns` is the broad model-turn limit per run; it defaults to `20`.
+Set it to `0` to disable the broad limit. `max_tool_call_malformed_turns`
+stops repeated same tool-call-malformed rounds earlier; it defaults to `3`.
+`max_tool_call_failure_turns` stops zero-text turns where every executable
+tool result failed; it also defaults to `3`. Set either guard to `0` to
+disable that breaker and rely on `max_turns`.
+
+See [Core Concepts](docs/core-concepts.md) for the distinction between runs,
+turns, tool rounds, and tool calls.
 
 ```toml
 [default]
-max_malformed_tool_call_turns = 3
+max_turns = 20
+max_tool_call_malformed_turns = 3
+max_tool_call_failure_turns = 3
 
 # Profile names are user-defined; this is not a built-in profile.
 [profiles.my-weak-provider]
-max_malformed_tool_call_turns = 2
+max_turns = 10
+max_tool_call_malformed_turns = 2
+max_tool_call_failure_turns = 2
 ```
 
 CLI override:
 
 ```bash
-aionrs --max-malformed-tool-call-turns 2 "Run the task"
+aionrs --max-turns 10 "Run the task"
+aionrs --max-tool-call-malformed-turns 2 "Run the task"
+aionrs --max-tool-call-failure-turns 2 "Run the task"
 ```
 
 ## Architecture
@@ -85,7 +97,7 @@ aionrs --max-malformed-tool-call-turns 2 "Run the task"
 │                  │  └ HTTP transport     │  Sub-Agent        │
 │  Compact Engine  │                       │  Spawner          │
 │  ├ Microcompact  │  File State Cache     │                   │
-│  ├ Autocompact   │  (LRU)               │  Output Compactor │
+│  ├ Autocompact   │  (LRU)                │  Output Compactor │
 │  └ Emergency     │                       │  (off/safe/full)  │
 └──────────────────┴───────────────────────┴───────────────────┘
 ```

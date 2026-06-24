@@ -5,9 +5,13 @@ pub enum AgentError {
     #[error("API error: {0}")]
     ApiError(String),
     #[error(
-        "provider repeatedly returned malformed tool calls ({count}/{limit}); stopped to avoid wasting tokens"
+        "provider repeatedly returned tool-call malformed outputs ({count}/{limit}); stopped to avoid wasting tokens"
     )]
-    RepeatedMalformedToolCall { count: usize, limit: usize },
+    ToolCallMalformed { count: usize, limit: usize },
+    #[error(
+        "stopped after {count}/{limit} consecutive tool-call failures; the task did not converge. Try adjusting the request or retrying."
+    )]
+    ToolCallFailures { count: usize, limit: usize },
     #[error("Provider error: {0}")]
     Provider(#[from] ProviderError),
     #[error("User aborted the session")]

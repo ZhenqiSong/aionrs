@@ -13,6 +13,8 @@ use crate::plan::PlanConfig;
 use crate::shell::ShellConfig;
 use aion_types::llm::ThinkingConfig;
 
+pub const DEFAULT_MAX_TURNS: usize = 20;
+
 // ---------------------------------------------------------------------------
 // Provider-specific sub-configurations (defined here to avoid circular deps)
 // ---------------------------------------------------------------------------
@@ -130,7 +132,9 @@ pub struct DefaultConfig {
     #[serde(default)]
     pub max_turns: Option<usize>,
     #[serde(default)]
-    pub max_malformed_tool_call_turns: Option<usize>,
+    pub max_tool_call_malformed_turns: Option<usize>,
+    #[serde(default)]
+    pub max_tool_call_failure_turns: Option<usize>,
     pub system_prompt: Option<String>,
 }
 
@@ -141,7 +145,8 @@ impl Default for DefaultConfig {
             model: None,
             max_tokens: default_max_tokens(),
             max_turns: None,
-            max_malformed_tool_call_turns: None,
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
             system_prompt: None,
         }
     }
@@ -170,7 +175,8 @@ pub struct ProfileConfig {
     pub base_url: Option<String>,
     pub max_tokens: Option<u32>,
     pub max_turns: Option<usize>,
-    pub max_malformed_tool_call_turns: Option<usize>,
+    pub max_tool_call_malformed_turns: Option<usize>,
+    pub max_tool_call_failure_turns: Option<usize>,
     /// Inherit settings from another profile
     pub extends: Option<String>,
     /// MCP server names to enable for this profile (references [mcp.servers.*])
@@ -252,6 +258,14 @@ fn default_max_sessions() -> usize {
     20
 }
 
+fn resolve_max_turns(configured: Option<usize>) -> Option<usize> {
+    match configured {
+        Some(0) => None,
+        Some(limit) => Some(limit),
+        None => Some(DEFAULT_MAX_TURNS),
+    }
+}
+
 // --- Resolved runtime config ---
 
 #[derive(Debug, Clone)]
@@ -263,7 +277,8 @@ pub struct Config {
     pub model: String,
     pub max_tokens: u32,
     pub max_turns: Option<usize>,
-    pub max_malformed_tool_call_turns: Option<usize>,
+    pub max_tool_call_malformed_turns: Option<usize>,
+    pub max_tool_call_failure_turns: Option<usize>,
     pub system_prompt: Option<String>,
     pub thinking: Option<ThinkingConfig>,
     pub prompt_caching: bool,
@@ -304,7 +319,8 @@ pub struct CliArgs {
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub max_turns: Option<usize>,
-    pub max_malformed_tool_call_turns: Option<usize>,
+    pub max_tool_call_malformed_turns: Option<usize>,
+    pub max_tool_call_failure_turns: Option<usize>,
     pub system_prompt: Option<String>,
     pub profile: Option<String>,
     pub auto_approve: bool,
@@ -365,10 +381,13 @@ impl Config {
             });
 
         let max_tokens = cli.max_tokens.unwrap_or(merged.default.max_tokens);
-        let max_turns = cli.max_turns.or(merged.default.max_turns);
-        let max_malformed_tool_call_turns = cli
-            .max_malformed_tool_call_turns
-            .or(merged.default.max_malformed_tool_call_turns);
+        let max_turns = resolve_max_turns(cli.max_turns.or(merged.default.max_turns));
+        let max_tool_call_malformed_turns = cli
+            .max_tool_call_malformed_turns
+            .or(merged.default.max_tool_call_malformed_turns);
+        let max_tool_call_failure_turns = cli
+            .max_tool_call_failure_turns
+            .or(merged.default.max_tool_call_failure_turns);
         let system_prompt = cli
             .system_prompt
             .clone()
@@ -412,7 +431,8 @@ impl Config {
             model,
             max_tokens,
             max_turns,
-            max_malformed_tool_call_turns,
+            max_tool_call_malformed_turns,
+            max_tool_call_failure_turns,
             system_prompt,
             thinking: None,
             prompt_caching,
@@ -605,10 +625,14 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             global.default.max_tokens
         },
         max_turns: project.default.max_turns.or(global.default.max_turns),
-        max_malformed_tool_call_turns: project
+        max_tool_call_malformed_turns: project
             .default
-            .max_malformed_tool_call_turns
-            .or(global.default.max_malformed_tool_call_turns),
+            .max_tool_call_malformed_turns
+            .or(global.default.max_tool_call_malformed_turns),
+        max_tool_call_failure_turns: project
+            .default
+            .max_tool_call_failure_turns
+            .or(global.default.max_tool_call_failure_turns),
         system_prompt: project
             .default
             .system_prompt
@@ -781,9 +805,12 @@ fn merge_profiles(base: ProfileConfig, overlay: ProfileConfig) -> ProfileConfig 
         base_url: overlay.base_url.or(base.base_url),
         max_tokens: overlay.max_tokens.or(base.max_tokens),
         max_turns: overlay.max_turns.or(base.max_turns),
-        max_malformed_tool_call_turns: overlay
-            .max_malformed_tool_call_turns
-            .or(base.max_malformed_tool_call_turns),
+        max_tool_call_malformed_turns: overlay
+            .max_tool_call_malformed_turns
+            .or(base.max_tool_call_malformed_turns),
+        max_tool_call_failure_turns: overlay
+            .max_tool_call_failure_turns
+            .or(base.max_tool_call_failure_turns),
         extends: None, // already resolved
         mcp_servers: overlay.mcp_servers.or(base.mcp_servers),
         shell: overlay.shell.or(base.shell),
@@ -807,8 +834,11 @@ fn apply_profile(mut config: ConfigFile, profile_name: &str) -> anyhow::Result<C
     if let Some(max_turns) = profile.max_turns {
         config.default.max_turns = Some(max_turns);
     }
-    if let Some(max_malformed_tool_call_turns) = profile.max_malformed_tool_call_turns {
-        config.default.max_malformed_tool_call_turns = Some(max_malformed_tool_call_turns);
+    if let Some(max_tool_call_malformed_turns) = profile.max_tool_call_malformed_turns {
+        config.default.max_tool_call_malformed_turns = Some(max_tool_call_malformed_turns);
+    }
+    if let Some(max_tool_call_failure_turns) = profile.max_tool_call_failure_turns {
+        config.default.max_tool_call_failure_turns = Some(max_tool_call_failure_turns);
     }
     if let Some(shell) = profile.shell {
         config.shell.default = shell;
@@ -864,8 +894,9 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# aionrs configuration
 provider = "anthropic"            # built-in provider or custom alias from [providers.<name>]
 # model = "claude-sonnet-4-20250514"
 max_tokens = 8192
-# max_turns = 30                  # optional: omit for unlimited turns
-# max_malformed_tool_call_turns = 3  # 0 disables the malformed tool-call loop breaker
+# max_turns = 20                  # max model turns per run; set 0 to disable
+# max_tool_call_malformed_turns = 3  # 0 disables the tool-call-malformed round breaker
+# max_tool_call_failure_turns = 3    # 0 disables the tool-call-failure round breaker
 # system_prompt = "..."          # optional custom system prompt
 
 # Shell execution settings
@@ -1144,7 +1175,8 @@ mod tests {
                 model: Some("global-model".to_string()),
                 max_tokens: 4096,
                 max_turns: Some(10),
-                max_malformed_tool_call_turns: Some(6),
+                max_tool_call_malformed_turns: Some(6),
+                max_tool_call_failure_turns: Some(6),
                 system_prompt: Some("global prompt".to_string()),
             },
             ..Default::default()
@@ -1155,7 +1187,8 @@ mod tests {
                 model: Some("project-model".to_string()),
                 max_tokens: 2048,   // non-default -> overrides global
                 max_turns: Some(5), // non-default -> overrides global
-                max_malformed_tool_call_turns: Some(2),
+                max_tool_call_malformed_turns: Some(2),
+                max_tool_call_failure_turns: Some(2),
                 system_prompt: Some("project prompt".to_string()),
             },
             ..Default::default()
@@ -1167,7 +1200,8 @@ mod tests {
         assert_eq!(merged.default.model, Some("project-model".to_string()));
         assert_eq!(merged.default.max_tokens, 2048);
         assert_eq!(merged.default.max_turns, Some(5));
-        assert_eq!(merged.default.max_malformed_tool_call_turns, Some(2));
+        assert_eq!(merged.default.max_tool_call_malformed_turns, Some(2));
+        assert_eq!(merged.default.max_tool_call_failure_turns, Some(2));
         assert_eq!(
             merged.default.system_prompt,
             Some("project prompt".to_string())
@@ -1183,7 +1217,8 @@ mod tests {
                 model: Some("global-model".to_string()),
                 max_tokens: 1024,
                 max_turns: Some(5),
-                max_malformed_tool_call_turns: Some(4),
+                max_tool_call_malformed_turns: Some(4),
+                max_tool_call_failure_turns: Some(4),
                 system_prompt: Some("global prompt".to_string()),
             },
             ..Default::default()
@@ -1198,7 +1233,8 @@ mod tests {
         assert_eq!(merged.default.model, Some("global-model".to_string()));
         assert_eq!(merged.default.max_tokens, 1024);
         assert_eq!(merged.default.max_turns, Some(5));
-        assert_eq!(merged.default.max_malformed_tool_call_turns, Some(4));
+        assert_eq!(merged.default.max_tool_call_malformed_turns, Some(4));
+        assert_eq!(merged.default.max_tool_call_failure_turns, Some(4));
         assert_eq!(
             merged.default.system_prompt,
             Some("global prompt".to_string())
@@ -1213,7 +1249,8 @@ mod tests {
         assert_eq!(merged.default.provider, default_provider());
         assert_eq!(merged.default.max_tokens, default_max_tokens());
         assert_eq!(merged.default.max_turns, None);
-        assert_eq!(merged.default.max_malformed_tool_call_turns, None);
+        assert_eq!(merged.default.max_tool_call_malformed_turns, None);
+        assert_eq!(merged.default.max_tool_call_failure_turns, None);
         assert!(merged.default.model.is_none());
         assert!(merged.providers.is_empty());
         assert!(merged.profiles.is_empty());
@@ -1233,7 +1270,8 @@ mod tests {
                 provider: Some("anthropic".to_string()),
                 model: Some("claude-3".to_string()),
                 max_tokens: Some(4096),
-                max_malformed_tool_call_turns: Some(3),
+                max_tool_call_malformed_turns: Some(3),
+                max_tool_call_failure_turns: Some(3),
                 ..Default::default()
             },
         );
@@ -1255,8 +1293,10 @@ mod tests {
         assert_eq!(result.provider, Some("anthropic".to_string()));
         // Parent's max_tokens is inherited
         assert_eq!(result.max_tokens, Some(4096));
-        // Parent's malformed tool-call turn limit is inherited
-        assert_eq!(result.max_malformed_tool_call_turns, Some(3));
+        // Parent's tool-call-malformed turn limit is inherited
+        assert_eq!(result.max_tool_call_malformed_turns, Some(3));
+        // Parent's tool-call-failure turn limit is inherited
+        assert_eq!(result.max_tool_call_failure_turns, Some(3));
         // extends is cleared after resolution
         assert!(result.extends.is_none());
     }
@@ -1422,7 +1462,8 @@ default = "powershell"
     fn test_profile_shell_overrides_base_config() {
         let mut config = ConfigFile {
             default: DefaultConfig {
-                max_malformed_tool_call_turns: Some(5),
+                max_tool_call_malformed_turns: Some(5),
+                max_tool_call_failure_turns: Some(5),
                 ..Default::default()
             },
             shell: crate::shell::ShellConfig {
@@ -1433,7 +1474,8 @@ default = "powershell"
         config.profiles.insert(
             "windows".into(),
             ProfileConfig {
-                max_malformed_tool_call_turns: Some(2),
+                max_tool_call_malformed_turns: Some(2),
+                max_tool_call_failure_turns: Some(2),
                 shell: Some("powershell".into()),
                 ..Default::default()
             },
@@ -1442,7 +1484,8 @@ default = "powershell"
         let applied = apply_profile(config, "windows").unwrap();
 
         assert_eq!(applied.shell.default, "powershell");
-        assert_eq!(applied.default.max_malformed_tool_call_turns, Some(2));
+        assert_eq!(applied.default.max_tool_call_malformed_turns, Some(2));
+        assert_eq!(applied.default.max_tool_call_failure_turns, Some(2));
     }
 
     #[test]
@@ -1526,10 +1569,18 @@ allow = ["commit", "review-pr", "db:*"]
         assert_eq!(config.default.provider, "anthropic");
         assert_eq!(config.default.max_tokens, 8192);
         assert_eq!(config.default.max_turns, None);
-        assert_eq!(config.default.max_malformed_tool_call_turns, None);
+        assert_eq!(config.default.max_tool_call_malformed_turns, None);
+        assert_eq!(config.default.max_tool_call_failure_turns, None);
         assert!(config.default.model.is_none());
         assert!(config.providers.is_empty());
         assert!(config.profiles.is_empty());
+    }
+
+    #[test]
+    fn resolve_max_turns_defaults_and_allows_explicit_disable() {
+        assert_eq!(resolve_max_turns(None), Some(DEFAULT_MAX_TURNS));
+        assert_eq!(resolve_max_turns(Some(0)), None);
+        assert_eq!(resolve_max_turns(Some(7)), Some(7));
     }
 
     #[test]
@@ -2049,7 +2100,8 @@ max_tokens = 1234
             model: None,
             max_tokens: None,
             max_turns: None,
-            max_malformed_tool_call_turns: None,
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
             system_prompt: None,
             profile: None,
             auto_approve: false,
@@ -2058,28 +2110,55 @@ max_tokens = 1234
 
         let config = Config::resolve(&base_cli_args).unwrap();
         assert_eq!(config.max_tokens, 1234);
-        assert_eq!(config.max_malformed_tool_call_turns, None);
+        assert_eq!(config.max_tool_call_malformed_turns, None);
+        assert_eq!(config.max_tool_call_failure_turns, None);
 
         std::fs::write(
             &project_toml,
             r#"
 [default]
 max_tokens = 1234
-max_malformed_tool_call_turns = 2
+max_tool_call_malformed_turns = 2
+max_tool_call_failure_turns = 4
 "#,
         )
         .unwrap();
 
         let config = Config::resolve(&base_cli_args).unwrap();
-        assert_eq!(config.max_malformed_tool_call_turns, Some(2));
+        assert_eq!(config.max_tool_call_malformed_turns, Some(2));
+        assert_eq!(config.max_tool_call_failure_turns, Some(4));
 
         let cli_args = CliArgs {
-            max_malformed_tool_call_turns: Some(0),
+            max_tool_call_malformed_turns: Some(0),
+            max_tool_call_failure_turns: Some(0),
             ..base_cli_args
         };
 
         let config = Config::resolve(&cli_args).unwrap();
-        assert_eq!(config.max_malformed_tool_call_turns, Some(0));
+        assert_eq!(config.max_tool_call_malformed_turns, Some(0));
+        assert_eq!(config.max_tool_call_failure_turns, Some(0));
+    }
+
+    #[test]
+    fn test_resolve_zero_max_turns_disables_turn_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cli_args = CliArgs {
+            provider: Some("anthropic".into()),
+            api_key: Some("test-key".into()),
+            base_url: None,
+            model: None,
+            max_tokens: None,
+            max_turns: Some(0),
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
+            system_prompt: None,
+            profile: None,
+            auto_approve: false,
+            project_dir: Some(tmp.path().to_path_buf()),
+        };
+
+        let config = Config::resolve(&cli_args).unwrap();
+        assert_eq!(config.max_turns, None);
     }
 
     #[test]
@@ -2091,7 +2170,8 @@ max_malformed_tool_call_turns = 2
             model: None,
             max_tokens: None,
             max_turns: None,
-            max_malformed_tool_call_turns: None,
+            max_tool_call_malformed_turns: None,
+            max_tool_call_failure_turns: None,
             system_prompt: None,
             profile: None,
             auto_approve: false,
