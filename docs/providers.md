@@ -90,6 +90,48 @@ aionrs --profile dev "Create a GitHub issue"
 
 ---
 
+## OpenAI-Compatible Thinking Models
+
+Some OpenAI-compatible providers support a `thinking` request object in
+addition to, or instead of, OpenAI `reasoning_effort`. Set the compat capability
+when the provider/profile should advertise thinking support to host UIs.
+
+```toml
+[profiles.deepseek-v4-pro]
+provider = "openai"
+model = "deepseek-v4-pro"
+api_key = "sk-xxx"
+base_url = "https://api.deepseek.com/v1"
+max_tokens = 16384
+
+[profiles.deepseek-v4-pro.compat]
+supports_thinking = true
+```
+
+Then enable thinking from the host protocol with `set_config`, or force it for
+one startup:
+
+```bash
+aionrs --profile deepseek-v4-pro --thinking enabled
+```
+
+For one-off OpenAI-compatible launches without a profile, the equivalent is:
+
+```bash
+aionrs --json-stream \
+  --provider openai \
+  --model deepseek-v4-pro \
+  --base-url https://api.deepseek.com/v1 \
+  --max-tokens 16384 \
+  --thinking enabled
+```
+
+`--thinking-budget` only has effect together with `--thinking enabled`, and is
+only sent on the Anthropic wire path. OpenAI-compatible requests currently send
+only `thinking.type`, so any configured budget is ignored by that provider path.
+
+---
+
 ## AWS Bedrock
 
 Access Claude models via AWS Bedrock with SigV4 authentication.

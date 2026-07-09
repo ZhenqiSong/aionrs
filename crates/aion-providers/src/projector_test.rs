@@ -422,6 +422,31 @@ mod tests {
     }
 
     #[test]
+    fn test_openai_projector_emits_enabled_thinking_when_requested() {
+        let request = test_request(vec![], Some(ThinkingConfig::Enabled { budget_tokens: 16_000 }));
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert_eq!(
+            body["thinking"],
+            json!({
+                "type": "enabled"
+            })
+        );
+    }
+
+    #[test]
+    fn test_openai_projector_emits_disabled_thinking_when_requested() {
+        let request = test_request(vec![], Some(ThinkingConfig::Disabled));
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert_eq!(body["thinking"], json!({ "type": "disabled" }));
+    }
+
+    #[test]
     fn test_tool_wire_shape_anthropic_default_emits_input_schema() {
         let request = test_request(test_tools(), None);
         let body = AnthropicWireProjector::project(

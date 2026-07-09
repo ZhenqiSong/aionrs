@@ -191,6 +191,17 @@ impl OpenAiProjector {
             }
         }
 
+        if let Some(thinking) = &request.thinking {
+            match thinking {
+                ThinkingConfig::Enabled { .. } => {
+                    body["thinking"] = json!({ "type": "enabled" });
+                }
+                ThinkingConfig::Disabled => {
+                    body["thinking"] = json!({ "type": "disabled" });
+                }
+            }
+        }
+
         preflight_projected_body(WireProvider::OpenAi, &body, tool_count, compat)?;
 
         Ok(body)

@@ -316,6 +316,8 @@ pub struct CliArgs {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
+    pub thinking: Option<String>,
+    pub thinking_budget: Option<u32>,
     pub max_turns: Option<usize>,
     pub max_tool_call_malformed_turns: Option<usize>,
     pub max_tool_call_failure_turns: Option<usize>,
@@ -361,10 +363,11 @@ impl Config {
             .or_else(|| provider_config.base_url.clone())
             .unwrap_or_else(|| match provider {
                 ProviderType::Anthropic => "https://api.anthropic.com".into(),
-                ProviderType::OpenAI => "https://api.openai.com".into(),
+                ProviderType::OpenAI => "https://api.openai.com/v1".into(),
                 // Bedrock/Vertex URLs are constructed from region/project, not base_url
                 ProviderType::Bedrock | ProviderType::Vertex => String::new(),
             });
+        let base_url = normalize_base_url(provider, base_url);
 
         let model = cli
             .model
@@ -413,6 +416,7 @@ impl Config {
         let user_compat = provider_config.compat.clone().unwrap_or_default();
 
         let compat = ProviderCompat::merge(compat_defaults, user_compat);
+        let thinking = resolve_cli_thinking(cli.thinking.as_deref(), cli.thinking_budget)?;
 
         Ok(Config {
             provider_label,
@@ -425,7 +429,7 @@ impl Config {
             max_tool_call_malformed_turns,
             max_tool_call_failure_turns,
             system_prompt,
-            thinking: None,
+            thinking,
             prompt_caching,
             compat,
             tools,
@@ -441,6 +445,35 @@ impl Config {
             logging: merged.logging,
         })
     }
+}
+
+const DEFAULT_THINKING_BUDGET: u32 = 10_000;
+
+fn resolve_cli_thinking(
+    thinking: Option<&str>,
+    thinking_budget: Option<u32>,
+) -> anyhow::Result<Option<ThinkingConfig>> {
+    match thinking {
+        Some("enabled") => Ok(Some(ThinkingConfig::Enabled {
+            budget_tokens: thinking_budget.unwrap_or(DEFAULT_THINKING_BUDGET),
+        })),
+        Some("disabled") => Ok(Some(ThinkingConfig::Disabled)),
+        Some(other) => anyhow::bail!("Invalid --thinking value: {other}. Expected 'enabled' or 'disabled'."),
+        None => Ok(None),
+    }
+}
+
+fn normalize_base_url(provider: ProviderType, base_url: String) -> String {
+    if provider != ProviderType::OpenAI {
+        return base_url;
+    }
+
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.eq_ignore_ascii_case("https://api.openai.com") || trimmed.eq_ignore_ascii_case("http://api.openai.com") {
+        return format!("{trimmed}/v1");
+    }
+
+    base_url
 }
 
 fn parse_builtin_provider(s: &str) -> Option<ProviderType> {
@@ -881,7 +914,7 @@ default = "auto"                 # auto, powershell, pwsh, cmd, bash, zsh, sh, o
 
 [providers.openai]
 # api_key = "sk-xxx"             # can also use env: OPENAI_API_KEY
-# base_url = "https://api.openai.com"
+# base_url = "https://api.openai.com/v1"
 
 # Custom provider alias (maps to a built-in provider type)
 # [providers.my-service]
@@ -923,7 +956,17 @@ default = "auto"                 # auto, powershell, pwsh, cmd, bash, zsh, sh, o
 # provider = "openai"
 # model = "deepseek-chat"
 # api_key = "sk-xxx"
-# base_url = "https://api.deepseek.com"
+# base_url = "https://api.deepseek.com/v1"
+
+# [profiles.deepseek-v4-pro]
+# provider = "openai"
+# model = "deepseek-v4-pro"
+# api_key = "sk-xxx"
+# base_url = "https://api.deepseek.com/v1"
+# max_tokens = 16384
+#
+# [profiles.deepseek-v4-pro.compat]
+# supports_thinking = true
 
 # [profiles.ollama]
 # provider = "openai"
