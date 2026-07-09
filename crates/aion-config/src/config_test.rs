@@ -118,7 +118,7 @@ mod tests {
             default: DefaultConfig {
                 provider: "anthropic".to_string(),
                 model: Some("global-model".to_string()),
-                max_tokens: 4096,
+                max_tokens: Some(4096),
                 max_turns: Some(10),
                 max_tool_call_malformed_turns: Some(6),
                 max_tool_call_failure_turns: Some(6),
@@ -130,7 +130,7 @@ mod tests {
             default: DefaultConfig {
                 provider: "openai".to_string(), // non-default -> overrides global
                 model: Some("project-model".to_string()),
-                max_tokens: 2048,   // non-default -> overrides global
+                max_tokens: Some(2048),
                 max_turns: Some(5), // non-default -> overrides global
                 max_tool_call_malformed_turns: Some(2),
                 max_tool_call_failure_turns: Some(2),
@@ -143,7 +143,7 @@ mod tests {
 
         assert_eq!(merged.default.provider, "openai");
         assert_eq!(merged.default.model, Some("project-model".to_string()));
-        assert_eq!(merged.default.max_tokens, 2048);
+        assert_eq!(merged.default.max_tokens, Some(2048));
         assert_eq!(merged.default.max_turns, Some(5));
         assert_eq!(merged.default.max_tool_call_malformed_turns, Some(2));
         assert_eq!(merged.default.max_tool_call_failure_turns, Some(2));
@@ -157,7 +157,7 @@ mod tests {
             default: DefaultConfig {
                 provider: "openai".to_string(),
                 model: Some("global-model".to_string()),
-                max_tokens: 1024,
+                max_tokens: Some(1024),
                 max_turns: Some(5),
                 max_tool_call_malformed_turns: Some(4),
                 max_tool_call_failure_turns: Some(4),
@@ -165,7 +165,7 @@ mod tests {
             },
             ..Default::default()
         };
-        // Project stays at built-in defaults (provider = "anthropic", max_tokens = 8192, max_turns = None)
+        // Project stays at built-in defaults (provider = "anthropic", max_tokens = None, max_turns = None)
         let project = ConfigFile::default();
 
         let merged = merge_config_files(global, project);
@@ -173,7 +173,7 @@ mod tests {
         // provider: project default "anthropic" == default_provider() -> use global "openai"
         assert_eq!(merged.default.provider, "openai");
         assert_eq!(merged.default.model, Some("global-model".to_string()));
-        assert_eq!(merged.default.max_tokens, 1024);
+        assert_eq!(merged.default.max_tokens, Some(1024));
         assert_eq!(merged.default.max_turns, Some(5));
         assert_eq!(merged.default.max_tool_call_malformed_turns, Some(4));
         assert_eq!(merged.default.max_tool_call_failure_turns, Some(4));
@@ -186,7 +186,7 @@ mod tests {
         let merged = merge_config_files(ConfigFile::default(), ConfigFile::default());
 
         assert_eq!(merged.default.provider, default_provider());
-        assert_eq!(merged.default.max_tokens, default_max_tokens());
+        assert_eq!(merged.default.max_tokens, None);
         assert_eq!(merged.default.max_turns, None);
         assert_eq!(merged.default.max_tool_call_malformed_turns, None);
         assert_eq!(merged.default.max_tool_call_failure_turns, None);
@@ -497,7 +497,7 @@ allow = ["commit", "review-pr", "db:*"]
         let config: ConfigFile = toml::from_str("").unwrap();
 
         assert_eq!(config.default.provider, "anthropic");
-        assert_eq!(config.default.max_tokens, 8192);
+        assert_eq!(config.default.max_tokens, None);
         assert_eq!(config.default.max_turns, None);
         assert_eq!(config.default.max_tool_call_malformed_turns, None);
         assert_eq!(config.default.max_tool_call_failure_turns, None);
@@ -549,7 +549,7 @@ prompt_caching = false
 
         assert_eq!(config.default.provider, "openai");
         assert_eq!(config.default.model, Some("gpt-4o".to_string()));
-        assert_eq!(config.default.max_tokens, 4096);
+        assert_eq!(config.default.max_tokens, Some(4096));
 
         let openai = config.providers.get("openai").unwrap();
         assert_eq!(openai.api_key.as_deref(), Some("sk-test-key"));
@@ -1101,7 +1101,7 @@ max_tokens = 1234
         };
 
         let config = Config::resolve(&base_cli_args).unwrap();
-        assert_eq!(config.max_tokens, 1234);
+        assert_eq!(config.max_tokens, Some(1234));
         assert_eq!(config.max_tool_call_malformed_turns, None);
         assert_eq!(config.max_tool_call_failure_turns, None);
 

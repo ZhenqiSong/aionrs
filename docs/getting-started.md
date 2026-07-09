@@ -82,7 +82,7 @@ aionrs config init
 [default]
 provider = "anthropic"
 # model = "claude-sonnet-4-20250514"
-max_tokens = 8192
+# max_tokens = 8192  # optional per-response output cap; omit to use provider/model defaults
 # max_turns = 20  # optional max model turns per run; omit or set 0 to disable
 max_tool_call_malformed_turns = 3  # default; set 0 to disable this breaker
 max_tool_call_failure_turns = 3  # default; set 0 to disable this breaker

@@ -125,8 +125,8 @@ pub struct DefaultConfig {
     #[serde(default = "default_provider")]
     pub provider: String,
     pub model: Option<String>,
-    #[serde(default = "default_max_tokens")]
-    pub max_tokens: u32,
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub max_turns: Option<usize>,
     #[serde(default)]
@@ -141,7 +141,7 @@ impl Default for DefaultConfig {
         Self {
             provider: default_provider(),
             model: None,
-            max_tokens: default_max_tokens(),
+            max_tokens: None,
             max_turns: None,
             max_tool_call_malformed_turns: None,
             max_tool_call_failure_turns: None,
@@ -240,9 +240,6 @@ impl Default for SessionConfig {
 fn default_provider() -> String {
     "anthropic".to_string()
 }
-fn default_max_tokens() -> u32 {
-    8192
-}
 fn default_allow_list() -> Vec<String> {
     vec!["Read".into(), "Grep".into(), "Glob".into()]
 }
@@ -273,7 +270,7 @@ pub struct Config {
     pub api_key: String,
     pub base_url: String,
     pub model: String,
-    pub max_tokens: u32,
+    pub max_tokens: Option<u32>,
     pub max_turns: Option<usize>,
     pub max_tool_call_malformed_turns: Option<usize>,
     pub max_tool_call_failure_turns: Option<usize>,
@@ -381,7 +378,7 @@ impl Config {
                 ProviderType::Vertex => "claude-sonnet-4@20250514".into(),
             });
 
-        let max_tokens = cli.max_tokens.unwrap_or(merged.default.max_tokens);
+        let max_tokens = cli.max_tokens.or(merged.default.max_tokens);
         let max_turns = resolve_max_turns(cli.max_turns.or(merged.default.max_turns));
         let max_tool_call_malformed_turns = cli
             .max_tool_call_malformed_turns
@@ -636,11 +633,7 @@ fn merge_config_files(global: ConfigFile, project: ConfigFile) -> ConfigFile {
             global.default.provider
         },
         model: project.default.model.or(global.default.model),
-        max_tokens: if project.default.max_tokens != default_max_tokens() {
-            project.default.max_tokens
-        } else {
-            global.default.max_tokens
-        },
+        max_tokens: project.default.max_tokens.or(global.default.max_tokens),
         max_turns: project.default.max_turns.or(global.default.max_turns),
         max_tool_call_malformed_turns: project
             .default
@@ -836,7 +829,7 @@ fn apply_profile(mut config: ConfigFile, profile_name: &str) -> anyhow::Result<C
         config.default.model = Some(model);
     }
     if let Some(max_tokens) = profile.max_tokens {
-        config.default.max_tokens = max_tokens;
+        config.default.max_tokens = Some(max_tokens);
     }
     if let Some(max_turns) = profile.max_turns {
         config.default.max_turns = Some(max_turns);
@@ -897,7 +890,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r#"# aionrs configuration
 [default]
 provider = "anthropic"            # built-in provider or custom alias from [providers.<name>]
 # model = "claude-sonnet-4-20250514"
-max_tokens = 8192
+# max_tokens = 8192                  # optional per-response output cap; omit to use provider/model defaults
 # max_turns = 20                  # optional max model turns per run; omit or set 0 to disable
 # max_tool_call_malformed_turns = 3  # 0 disables the tool-call-malformed round breaker
 # max_tool_call_failure_turns = 3    # 0 disables the tool-call-failure round breaker

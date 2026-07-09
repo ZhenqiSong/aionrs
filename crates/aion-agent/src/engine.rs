@@ -74,7 +74,7 @@ pub struct AgentEngine {
     /// Output message ID for the currently streaming run.
     msg_id: String,
     /// Maximum output tokens requested from the provider per turn.
-    max_tokens: u32,
+    max_tokens: Option<u32>,
     /// Optional cap on counted model turns within a single run.
     max_turns_per_run: Option<usize>,
     /// Consecutive malformed tool-call round limit before aborting.
