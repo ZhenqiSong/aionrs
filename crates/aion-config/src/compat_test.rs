@@ -226,7 +226,7 @@ max_tokens = 64000
         assert!(merged.supports_thinking());
         assert!(!merged.supports_effort());
         assert!(merged.effort_levels().is_empty());
-        assert_eq!(merged.default_max_tokens_for_model("claude-sonnet-4-6"), Some(64_000));
+        assert_eq!(merged.default_max_tokens_for_model("claude-sonnet-4-6"), Some(128_000));
         assert_eq!(merged.default_max_tokens_for_model("unknown-model"), Some(128_000));
     }
 
@@ -239,7 +239,7 @@ max_tokens = 64000
         assert!(!compat.sanitize_schema());
         assert!(!compat.merge_assistant_messages());
         assert!(!compat.clean_orphan_tool_calls());
-        assert_eq!(compat.default_max_tokens_for_model("claude-sonnet-4-6"), Some(64_000));
+        assert_eq!(compat.default_max_tokens_for_model("claude-sonnet-4-6"), Some(128_000));
         assert_eq!(compat.default_max_tokens_for_model("unknown-model"), Some(128_000));
     }
 

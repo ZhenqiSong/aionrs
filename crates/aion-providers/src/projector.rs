@@ -158,6 +158,9 @@ impl OpenAiProjector {
 
     pub(crate) fn project(request: &LlmRequest, compat: &ProviderCompat) -> Result<Value, ProjectionError> {
         let max_tokens_field = compat.max_tokens_field();
+        let max_tokens = request
+            .max_tokens
+            .or_else(|| compat.default_max_tokens_for_model(&request.model));
 
         let mut body = json!({
             "model": request.model,
@@ -168,7 +171,7 @@ impl OpenAiProjector {
             ),
             "stream": true
         });
-        if let Some(max_tokens) = request.max_tokens {
+        if let Some(max_tokens) = max_tokens {
             body[max_tokens_field] = json!(max_tokens);
         }
 

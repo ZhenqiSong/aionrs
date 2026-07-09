@@ -402,7 +402,7 @@ fn anthropic_model_max_tokens_rules() -> Vec<ModelMaxTokensRule> {
         ("claude-opus-4-8", 128_000),
         ("claude-opus-4-7", 128_000),
         ("claude-opus-4-6", 128_000),
-        ("claude-sonnet-4-6", 64_000),
+        ("claude-sonnet-4-6", 128_000),
         ("claude-opus-4-5", 64_000),
         ("claude-sonnet-4-5", 64_000),
         ("claude-haiku-4-5", 64_000),

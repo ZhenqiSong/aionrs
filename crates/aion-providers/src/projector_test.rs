@@ -3,6 +3,7 @@ use super::*;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aion_config::compat::ModelMaxTokensRule;
     use aion_config::schema::legalize_json_schema;
     use aion_types::message::{ContentBlock, Message, Role};
     use aion_types::tool::ToolDef;
@@ -204,7 +205,7 @@ mod tests {
         )
         .expect("request body projection should succeed");
 
-        assert_eq!(body["max_tokens"], 64_000);
+        assert_eq!(body["max_tokens"], 128_000);
     }
 
     #[test]
@@ -399,6 +400,24 @@ mod tests {
 
         assert!(body.get("max_tokens").is_none());
         assert!(body.get("max_completion_tokens").is_none());
+    }
+
+    #[test]
+    fn test_openai_projector_uses_compat_default_max_tokens_when_unset() {
+        let mut request = test_request(vec![], None);
+        request.model = "custom-large-model".to_string();
+        request.max_tokens = None;
+
+        let mut compat = ProviderCompat::openai_defaults();
+        compat.transport.default_max_tokens = Some(16_384);
+        compat.transport.model_max_tokens = Some(vec![ModelMaxTokensRule {
+            pattern: "custom-large".to_string(),
+            max_tokens: 32_768,
+        }]);
+
+        let body = OpenAiProjector::project(&request, &compat).expect("request body projection should succeed");
+
+        assert_eq!(body["max_tokens"], 32_768);
     }
 
     #[test]
