@@ -46,7 +46,7 @@ mod tests_set_config {
         super::AgentEngine {
             provider: Arc::new(NullProvider),
             model: model.to_string(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             thinking: None,
             compat: ProviderCompat::anthropic_defaults(),
             system_prompt: String::new(),
@@ -386,7 +386,7 @@ mod tests_phase6 {
         super::AgentEngine {
             provider: Arc::new(NullProvider),
             model: model.to_string(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             thinking: None,
             compat: ProviderCompat::anthropic_defaults(),
             system_prompt: String::new(),
@@ -626,7 +626,7 @@ mod tests_compact {
         super::AgentEngine {
             provider: Arc::new(NullProvider),
             model: "test-model".to_string(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             thinking: None,
             compat: ProviderCompat::anthropic_defaults(),
             system_prompt: String::new(),
@@ -992,7 +992,7 @@ mod tests_plan_mode {
         super::AgentEngine {
             provider: Arc::new(NullProvider),
             model: "test-model".to_string(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             thinking: None,
             compat: ProviderCompat::anthropic_defaults(),
             system_prompt: String::new(),
@@ -1199,7 +1199,7 @@ mod tests_handle_command {
         super::AgentEngine {
             provider: Arc::new(NullProvider),
             model: "test-model".to_string(),
-            max_tokens: 4096,
+            max_tokens: Some(4096),
             thinking: None,
             compat: ProviderCompat::anthropic_defaults(),
             system_prompt: String::new(),

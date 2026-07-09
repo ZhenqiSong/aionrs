@@ -57,7 +57,7 @@ impl AgentSpawner {
     pub async fn spawn_one(&self, sub_config: SubAgentConfig) -> SubAgentResult {
         let mut config = self.base_config.clone();
         config.max_turns = Some(sub_config.max_turns);
-        config.max_tokens = sub_config.max_tokens;
+        config.max_tokens = Some(sub_config.max_tokens);
         if let Some(sp) = sub_config.system_prompt.clone() {
             config.system_prompt = Some(sp);
         }
@@ -136,7 +136,7 @@ impl Spawner for AgentSpawner {
     async fn spawn_fork(&self, sub_config: SubAgentConfig, overrides: ForkOverrides) -> SubAgentResult {
         let mut config = self.base_config.clone();
         config.max_turns = Some(sub_config.max_turns);
-        config.max_tokens = sub_config.max_tokens;
+        config.max_tokens = Some(sub_config.max_tokens);
         if let Some(sp) = sub_config.system_prompt.clone() {
             config.system_prompt = Some(sp);
         }

@@ -74,7 +74,7 @@ mod tests {
             api_key: api_key.to_string(),
             base_url: base_url.to_string(),
             model: model.to_string(),
-            max_tokens: 1024,
+            max_tokens: Some(1024),
             max_turns: Some(20),
             max_tool_call_malformed_turns: None,
             max_tool_call_failure_turns: None,

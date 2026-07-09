@@ -91,11 +91,17 @@ impl AnthropicWireProjector {
             json!(&request.system)
         };
 
+        let max_tokens = request
+            .max_tokens
+            .or_else(|| compat.default_max_tokens_for_model(&request.model));
+
         let mut body = json!({
-            "max_tokens": request.max_tokens,
             "system": system,
             "messages": anthropic_shared::build_messages(&request.messages, compat)
         });
+        if let Some(max_tokens) = max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
 
         if params.include_model_in_body {
             body["model"] = json!(request.model);
@@ -162,7 +168,9 @@ impl OpenAiProjector {
             ),
             "stream": true
         });
-        body[max_tokens_field] = json!(request.max_tokens);
+        if let Some(max_tokens) = request.max_tokens {
+            body[max_tokens_field] = json!(max_tokens);
+        }
 
         if compat.include_stream_options() {
             body["stream_options"] = json!({ "include_usage": true });

@@ -18,7 +18,7 @@ mod tests {
                 }],
             )],
             tools,
-            max_tokens: 8192,
+            max_tokens: Some(8192),
             thinking,
             reasoning_effort: None,
         }
@@ -182,6 +182,29 @@ mod tests {
                 }
             })
         );
+    }
+
+    #[test]
+    fn test_anthropic_projector_uses_model_default_max_tokens_when_unset() {
+        let mut request = test_request(vec![], None);
+        request.model = "claude-sonnet-4-6".to_string();
+        request.max_tokens = None;
+
+        let body = AnthropicWireProjector::project(
+            &request,
+            &ProviderCompat::anthropic_defaults(),
+            WireParams {
+                provider: WireProvider::Anthropic,
+                anthropic_version: None,
+                include_model_in_body: true,
+                include_stream: true,
+                cache_enabled: false,
+                sanitize_schema: false,
+            },
+        )
+        .expect("request body projection should succeed");
+
+        assert_eq!(body["max_tokens"], 64_000);
     }
 
     #[test]
@@ -364,6 +387,18 @@ mod tests {
 
         assert_eq!(body["max_completion_tokens"], 8192);
         assert!(body.get("max_tokens").is_none());
+    }
+
+    #[test]
+    fn test_openai_projector_omits_max_tokens_when_unset() {
+        let mut request = test_request(vec![], None);
+        request.max_tokens = None;
+
+        let body = OpenAiProjector::project(&request, &ProviderCompat::openai_defaults())
+            .expect("request body projection should succeed");
+
+        assert!(body.get("max_tokens").is_none());
+        assert!(body.get("max_completion_tokens").is_none());
     }
 
     #[test]

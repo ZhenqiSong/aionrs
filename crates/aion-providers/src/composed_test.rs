@@ -23,7 +23,7 @@ mod tests {
                 }],
             )],
             tools: vec![],
-            max_tokens: 8192,
+            max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
         }
@@ -56,7 +56,7 @@ mod tests {
             system: String::new(),
             messages: vec![],
             tools: vec![],
-            max_tokens: 1024,
+            max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
         };
@@ -82,7 +82,7 @@ mod tests {
             system: String::new(),
             messages: vec![],
             tools: vec![],
-            max_tokens: 2048,
+            max_tokens: Some(2048),
             thinking: None,
             reasoning_effort: None,
         };
@@ -108,7 +108,7 @@ mod tests {
                 input_schema: json!({"type":"object","properties":{}}),
                 deferred: false,
             }],
-            max_tokens: 1024,
+            max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
         };
@@ -139,7 +139,7 @@ mod tests {
             system: "You are a test assistant.".to_string(),
             messages,
             tools,
-            max_tokens: 8192,
+            max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
         }
