@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.2.5](https://github.com/iOfficeAI/aionrs/compare/v0.2.4...v0.2.5) (2026-07-17)
+
+
+### Features
+
+* add image content block support for Aion CLI ([e362e0a](https://github.com/iOfficeAI/aionrs/commit/e362e0a6eb57ff39b190077c49c1a808361754d7))
+* **agent:** route images through capability-aware view tool ([3c28b34](https://github.com/iOfficeAI/aionrs/commit/3c28b3457e175fd331df37512c6d78f02f84b83e))
+
+
+### Bug Fixes
+
+* **agent:** harden image input handling ([d8905c0](https://github.com/iOfficeAI/aionrs/commit/d8905c0b9a2f9c5d97804426d7bba820d50a6b29))
+* **cli:** declare direct aion-types dependency ([43ddbf7](https://github.com/iOfficeAI/aionrs/commit/43ddbf741774efaa35f503736dacf79c5b4fb014))
+
 ## [0.2.4](https://github.com/iOfficeAI/aionrs/compare/v0.2.3...v0.2.4) (2026-07-14)
 
 
