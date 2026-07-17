@@ -61,6 +61,7 @@ dependencies = [
  "aion-providers",
  "aion-skills",
  "aion-tools",
+ "aion-types",
  "anyhow",
  "clap",
  "tokio",
