@@ -475,7 +475,7 @@ fn normalize_base_url(provider: ProviderType, base_url: String) -> String {
 
 fn parse_builtin_provider(s: &str) -> Option<ProviderType> {
     match s {
-        "anthropic" => Some(ProviderType::Anthropic),
+        "anthropic" | "dhgate" => Some(ProviderType::Anthropic),
         "openai" => Some(ProviderType::OpenAI),
         "bedrock" => Some(ProviderType::Bedrock),
         "vertex" => Some(ProviderType::Vertex),
