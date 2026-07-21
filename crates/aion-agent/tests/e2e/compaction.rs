@@ -166,7 +166,7 @@ async fn case_9_off_vs_safe_content() {
     let mut engine = AgentEngine::new_with_provider(provider, config, registry2, output, std::env::temp_dir());
 
     let prompt = "Call check_tool, then answer: does the tool output contain ANSI color escape codes (sequences starting with \\x1b)? Answer only 'yes' or 'no'.";
-    let result = engine.run(prompt, "").await.expect("engine.run should succeed");
+    let result = engine.run(prompt, "", "").await.expect("engine.run should succeed");
 
     eprintln!("[e2e:compaction] LLM question: does Safe output contain ANSI?");
     eprintln!("[e2e:compaction] LLM answer: {}", result.text);
@@ -224,7 +224,7 @@ async fn case_10_off_vs_full_token_savings() {
         AgentEngine::new_with_provider(provider_off, config_off, registry_off, output_off, std::env::temp_dir());
 
     let prompt = "Call big_tool, then say 'done'.";
-    let result_off = engine_off.run(prompt, "").await.expect("engine.run should succeed");
+    let result_off = engine_off.run(prompt, "", "").await.expect("engine.run should succeed");
 
     // Full
     let mut config_full = openai_config(&api_key);
@@ -241,7 +241,7 @@ async fn case_10_off_vs_full_token_savings() {
         std::env::temp_dir(),
     );
 
-    let result_full = engine_full.run(prompt, "").await.expect("engine.run should succeed");
+    let result_full = engine_full.run(prompt, "", "").await.expect("engine.run should succeed");
 
     eprintln!("[e2e:compaction] Off  input_tokens: {}", result_off.usage.input_tokens);
     eprintln!("[e2e:compaction] Full input_tokens: {}", result_full.usage.input_tokens);
@@ -316,7 +316,7 @@ async fn case_11_toon_comprehension_and_system_prompt() {
 
     let prompt =
         "Call data_tool, then answer: what is the name of the second record? Answer with just the name, nothing else.";
-    let result = engine.run(prompt, "").await.expect("engine.run should succeed");
+    let result = engine.run(prompt, "", "").await.expect("engine.run should succeed");
 
     eprintln!("[e2e:compaction] LLM question: name of second record?");
     eprintln!("[e2e:compaction] LLM answer: {}", result.text);

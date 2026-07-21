@@ -55,6 +55,7 @@ mod tests_set_config {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -429,6 +430,7 @@ mod tests_phase6 {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -683,6 +685,7 @@ mod tests_compact {
             messages,
             total_usage: Default::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -1097,6 +1100,7 @@ mod tests_plan_mode {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -1309,6 +1313,7 @@ mod tests_handle_command {
             messages: vec![],
             total_usage: Default::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,
             max_tool_call_failure_turns: 3,
@@ -1393,7 +1398,7 @@ mod tests_handle_command {
     #[tokio::test]
     async fn run_intercepts_help_returns_zero_turns() {
         let mut engine = make_engine();
-        let result = engine.run("/help", "msg-1").await.unwrap();
+        let result = engine.run("/help", "msg-1", "").await.unwrap();
         assert_eq!(result.turns, 0);
         assert_eq!(result.usage.input_tokens, 0);
     }
@@ -1401,7 +1406,7 @@ mod tests_handle_command {
     #[tokio::test]
     async fn run_intercepts_quit_returns_user_aborted() {
         let mut engine = make_engine();
-        let err = engine.run("/quit", "msg-1").await.unwrap_err();
+        let err = engine.run("/quit", "msg-1", "").await.unwrap_err();
         assert!(matches!(err, AgentError::UserAborted));
     }
 
@@ -1446,7 +1451,7 @@ mod tests_handle_command {
     async fn run_treats_aion_files_marker_as_plain_text() {
         let mut engine = make_engine_with_provider(Arc::new(SingleResponseProvider));
         let input = "discuss [[AION_FILES]] and file.txt";
-        let _ = engine.run(input, "msg-1").await;
+        let _ = engine.run(input, "msg-1", "").await;
 
         let user_msg = engine
             .messages
@@ -2010,6 +2015,7 @@ mod tests_tool_policy_enforcement {
             messages: Vec::new(),
             total_usage: Default::default(),
             msg_id: "test-message".to_string(),
+            user_id: None,
             max_tokens: Some(4096),
             max_turns_per_run: Some(10),
             max_tool_call_malformed_turns: 3,

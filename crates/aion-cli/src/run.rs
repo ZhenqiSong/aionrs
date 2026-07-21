@@ -53,7 +53,7 @@ pub(crate) async fn run_main_flow(cli: Cli) -> anyhow::Result<()> {
     if prompt.is_empty() {
         repl_loop(&mut engine, &terminal, &output).await?;
     } else {
-        let run_result = engine.run(&prompt, "").await?;
+        let run_result = engine.run(&prompt, "", "").await?;
         output.emit_stream_end(
             "",
             run_result.turns,
@@ -91,7 +91,7 @@ async fn repl_loop(
             break;
         }
 
-        match engine.run(input, "").await {
+        match engine.run(input, "", "").await {
             Ok(result) => {
                 if result.turns > 0 {
                     output.emit_stream_end(

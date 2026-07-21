@@ -75,6 +75,8 @@ pub struct AgentEngine {
     total_usage: TokenUsage,
     /// Output message ID for the currently streaming run.
     msg_id: String,
+    /// End-user identifier forwarded to the provider as X-User-ID header.
+    user_id: Option<String>,
     /// Maximum output tokens requested from the provider per turn.
     max_tokens: Option<u32>,
     /// Optional cap on counted model turns within a single run.
@@ -183,6 +185,7 @@ impl AgentEngine {
             messages: Vec::new(),
             total_usage: TokenUsage::default(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -270,6 +273,7 @@ impl AgentEngine {
             messages: session.messages.clone(),
             total_usage: session.total_usage.clone(),
             msg_id: String::new(),
+            user_id: None,
             max_turns_per_run: config.max_turns,
             max_tool_call_malformed_turns: config
                 .max_tool_call_malformed_turns
@@ -364,7 +368,8 @@ impl AgentEngine {
     /// This entry point is text-only: the input is wrapped in a single
     /// `ContentBlock::Text` and no markers are parsed. Slash commands are
     /// intercepted before any LLM call.
-    pub async fn run(&mut self, user_input: &str, msg_id: &str) -> Result<AgentResult, AgentError> {
+    pub async fn run(&mut self, user_input: &str, msg_id: &str, user_id: &str) -> Result<AgentResult, AgentError> {
+        self.user_id = Some(user_id.to_string());
         // Slash command interception — before any LLM call.
         if let Some(result) = self.handle_command(user_input).await? {
             return Ok(result);
@@ -566,6 +571,7 @@ impl AgentEngine {
             max_tokens: self.max_tokens,
             thinking: self.thinking.clone(),
             reasoning_effort: self.reasoning_effort.clone(),
+            user_id: self.user_id.clone(),
         }
     }
 

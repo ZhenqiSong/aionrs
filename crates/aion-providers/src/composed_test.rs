@@ -26,6 +26,7 @@ mod tests {
             max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         }
     }
 
@@ -59,6 +60,7 @@ mod tests {
             max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         };
         let body = provider
             .build_request_body(&req)
@@ -85,6 +87,7 @@ mod tests {
             max_tokens: Some(2048),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         };
         let body = provider
             .build_request_body(&req)
@@ -111,6 +114,7 @@ mod tests {
             max_tokens: Some(1024),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         };
 
         let error = provider
@@ -142,6 +146,7 @@ mod tests {
             max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         }
     }
 

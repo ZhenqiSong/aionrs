@@ -67,7 +67,7 @@ async fn test_openai_single_turn_completion() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let result = engine
-        .run("Say 'hello world' and nothing else.", "")
+        .run("Say 'hello world' and nothing else.", "", "")
         .await
         .expect("engine.run should not fail");
 
@@ -100,7 +100,7 @@ async fn test_openai_tool_use() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let prompt = format!("Read the file at '{}' and tell me what it contains. Be brief.", path);
-    let result = engine.run(&prompt, "").await.expect("engine.run should not fail");
+    let result = engine.run(&prompt, "", "").await.expect("engine.run should not fail");
 
     assert!(!result.text.is_empty());
     assert!(

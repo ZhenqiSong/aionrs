@@ -22,6 +22,7 @@ mod tests {
             max_tokens: Some(8192),
             thinking,
             reasoning_effort: None,
+        user_id: None,
         }
     }
 

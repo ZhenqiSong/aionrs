@@ -243,6 +243,7 @@ impl BedrockTransportState {
             body,
             body_bytes: Some(body_bytes),
             tool_wire_shape,
+            user_id: None,
         })
     }
 

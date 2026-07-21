@@ -31,6 +31,7 @@ fn make_request() -> LlmRequest {
         max_tokens: Some(512),
         thinking: None,
         reasoning_effort: None,
+    user_id: None,
     }
 }
 

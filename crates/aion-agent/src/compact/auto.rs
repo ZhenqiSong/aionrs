@@ -117,6 +117,7 @@ pub async fn autocompact(
             max_tokens: Some(COMPACT_MAX_OUTPUT_TOKENS),
             thinking: Some(ThinkingConfig::Disabled),
             reasoning_effort: None,
+            user_id: None,
         };
 
         match provider.stream(&request).await {

@@ -33,6 +33,7 @@ mod tests {
             max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         }
     }
 
@@ -81,6 +82,7 @@ mod tests {
                 json!({ "model": "glm-test" }),
                 &compat,
                 ResolvedToolWireShape::OpenAiFunction,
+                None,
             )
             .expect("request projection should succeed");
 
@@ -97,6 +99,7 @@ mod tests {
                 json!({ "model": "gpt-test" }),
                 &compat,
                 ResolvedToolWireShape::OpenAiFunction,
+                None,
             )
             .expect("request projection should succeed");
 
@@ -114,6 +117,7 @@ mod tests {
                 json!({ "model": "gpt-5.6-sol" }),
                 &compat,
                 ResolvedToolWireShape::OpenAiFunction,
+                None,
             )
             .expect("request projection should succeed");
 
@@ -131,6 +135,7 @@ mod tests {
                 json!({ "model": "glm-test" }),
                 &compat,
                 ResolvedToolWireShape::OpenAiFunction,
+                None,
             )
             .expect("request projection should succeed");
 
@@ -249,7 +254,7 @@ mod tests {
             .project_body(&test_request(vec![]), &compat)
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         let error = transport
@@ -280,7 +285,7 @@ mod tests {
             .project_body(&test_request(vec![]), &compat)
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         let error = transport
@@ -311,7 +316,7 @@ mod tests {
             .project_body(&test_request(vec![]), &compat)
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         let error = transport.send(request).await.expect_err("500 should map to api error");
@@ -338,7 +343,7 @@ mod tests {
             .project_body(&test_request(vec![test_tool()]), &compat)
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         let error = transport
@@ -361,10 +366,10 @@ mod tests {
         let body = json!({"model": "test-model"});
         let tool_wire_shape = ResolvedToolWireShape::AnthropicInputSchema;
         let enabled = ProviderTransport::Anthropic(AnthropicTransport::new("test-key", "https://example.test", true))
-            .build_projected_request("test-model", body.clone(), &compat, tool_wire_shape)
+            .build_projected_request("test-model", body.clone(), &compat, tool_wire_shape, None)
             .expect("projected request should build");
         let disabled = ProviderTransport::Anthropic(AnthropicTransport::new("test-key", "https://example.test", false))
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         assert_eq!(
@@ -399,7 +404,7 @@ mod tests {
         );
 
         let request = bedrock
-            .build_projected_request("test-model", body, &compat, ResolvedToolWireShape::AnthropicInputSchema)
+            .build_projected_request("test-model", body, &compat, ResolvedToolWireShape::AnthropicInputSchema, None)
             .expect("bedrock projected request should build");
 
         assert_eq!(request.body_bytes, Some(expected_body_bytes));
@@ -432,6 +437,7 @@ mod tests {
             body: json!({}),
             body_bytes: None,
             tool_wire_shape: ResolvedToolWireShape::AnthropicInputSchema,
+        user_id: None,
         };
 
         let bedrock_error = bedrock
@@ -477,6 +483,7 @@ mod tests {
             body: json!({"this": "must not be serialized"}),
             body_bytes: Some(expected_body_bytes),
             tool_wire_shape: ResolvedToolWireShape::AnthropicInputSchema,
+        user_id: None,
         };
 
         bedrock
@@ -502,7 +509,7 @@ mod tests {
             .project_body(&test_request(vec![]), &compat)
             .expect("request body projection should succeed");
         let request = transport
-            .build_projected_request("test-model", body, &compat, tool_wire_shape)
+            .build_projected_request("test-model", body, &compat, tool_wire_shape, None)
             .expect("projected request should build");
 
         transport

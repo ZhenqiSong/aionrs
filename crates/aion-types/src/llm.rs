@@ -15,6 +15,8 @@ pub struct LlmRequest {
     pub thinking: Option<ThinkingConfig>,
     /// Optional: reasoning effort for OpenAI reasoning models (low/medium/high)
     pub reasoning_effort: Option<String>,
+    /// Optional: end-user identifier forwarded to the provider as X-User-ID header.
+    pub user_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

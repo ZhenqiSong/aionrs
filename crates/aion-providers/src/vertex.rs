@@ -110,6 +110,7 @@ impl VertexTransportState {
             body,
             body_bytes: None,
             tool_wire_shape,
+            user_id: None,
         })
     }
 

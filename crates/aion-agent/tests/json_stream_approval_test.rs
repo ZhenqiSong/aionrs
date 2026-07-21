@@ -89,7 +89,7 @@ async fn test_tool_approval_approve_flow() {
         }
     });
 
-    let result = engine.run("Use the tool", "msg-1").await.expect("should succeed");
+    let result = engine.run("Use the tool", "msg-1", "").await.expect("should succeed");
     assert_eq!(result.text, "Done");
     assert_eq!(result.turns, 2);
 }
@@ -148,7 +148,7 @@ async fn test_tool_approval_deny_flow() {
         );
     });
 
-    let result = engine.run("Use the tool", "msg-2").await.expect("should succeed");
+    let result = engine.run("Use the tool", "msg-2", "").await.expect("should succeed");
     assert_eq!(result.text, "Cannot run tool");
     assert_eq!(result.turns, 2);
 }
@@ -197,7 +197,7 @@ async fn test_auto_approve_bypasses_approval() {
     engine.set_protocol_writer(writer);
 
     // No background task to approve — should not hang
-    let result = engine.run("Use the tool", "msg-3").await.expect("should succeed");
+    let result = engine.run("Use the tool", "msg-3", "").await.expect("should succeed");
     assert_eq!(result.text, "Auto done");
     assert_eq!(result.turns, 2);
 }
@@ -247,7 +247,7 @@ async fn test_session_auto_approve_category() {
     engine.set_protocol_writer(writer);
 
     // No background task to approve — should not hang
-    let result = engine.run("Use the tool", "msg-4").await.expect("should succeed");
+    let result = engine.run("Use the tool", "msg-4", "").await.expect("should succeed");
     assert_eq!(result.text, "Session auto");
     assert_eq!(result.turns, 2);
 }
@@ -295,7 +295,7 @@ async fn test_client_disconnect_aborts() {
         am.drop_pending("call-5");
     });
 
-    let err = engine.run("Use the tool", "msg-5").await.unwrap_err();
+    let err = engine.run("Use the tool", "msg-5", "").await.unwrap_err();
     assert!(
         format!("{:?}", err).contains("UserAborted"),
         "expected UserAborted, got: {:?}",

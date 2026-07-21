@@ -65,6 +65,7 @@ fn openai_request(messages: Vec<Message>) -> LlmRequest {
         max_tokens: Some(128),
         thinking: None,
         reasoning_effort: None,
+    user_id: None,
     }
 }
 

@@ -254,7 +254,7 @@ async fn case_6_compressed_content_reaches_llm() {
     let mut engine = AgentEngine::new_with_provider(Arc::new(provider), config, registry, output, std::env::temp_dir());
 
     engine
-        .run("call test_tool", "")
+        .run("call test_tool", "", "")
         .await
         .expect("engine.run should succeed");
 

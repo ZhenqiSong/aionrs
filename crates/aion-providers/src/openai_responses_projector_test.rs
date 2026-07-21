@@ -16,6 +16,7 @@ mod tests {
             max_tokens: Some(4096),
             thinking: None,
             reasoning_effort: Some("high".to_string()),
+            user_id: None,
         }
     }
 

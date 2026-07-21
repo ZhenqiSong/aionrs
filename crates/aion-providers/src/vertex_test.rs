@@ -34,6 +34,7 @@ mod tests {
             max_tokens: Some(8192),
             thinking: None,
             reasoning_effort: None,
+        user_id: None,
         }
     }
 
@@ -87,7 +88,7 @@ mod tests {
         let tool_wire_shape = ResolvedToolWireShape::AnthropicInputSchema;
 
         let request = transport
-            .build_projected_request("claude-test-model", body.clone(), &compat, tool_wire_shape)
+            .build_projected_request("claude-test-model", body.clone(), &compat, tool_wire_shape, None)
             .expect("vertex projected request should build");
 
         assert_eq!(
@@ -132,6 +133,7 @@ mod tests {
             body: json!({"messages": []}),
             body_bytes: None,
             tool_wire_shape: ResolvedToolWireShape::AnthropicInputSchema,
+        user_id: None,
         };
 
         let error = transport

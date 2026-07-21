@@ -44,6 +44,7 @@ impl LlmProvider for ComposedProvider {
             "provider request projected"
         );
 
+        let user_id = request.user_id.clone();
         let transport = self.transport.clone();
         let compat = self.compat.clone();
         let model = request.model.clone();
@@ -52,8 +53,15 @@ impl LlmProvider for ComposedProvider {
             let compat = compat.clone();
             let body = body.clone();
             let model = model.clone();
+            let user_id = user_id.clone();
             async move {
-                let projected_request = transport.build_projected_request(&model, body, &compat, tool_wire_shape)?;
+                let projected_request = transport.build_projected_request(
+                    &model,
+                    body,
+                    &compat,
+                    tool_wire_shape,
+                    user_id,
+                )?;
                 transport.send(projected_request).await
             }
         };

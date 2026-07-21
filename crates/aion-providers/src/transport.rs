@@ -63,6 +63,7 @@ pub(crate) struct ProjectedHttpRequest {
     pub body: Value,
     pub body_bytes: Option<Vec<u8>>,
     pub tool_wire_shape: ResolvedToolWireShape,
+    pub user_id: Option<String>,
 }
 
 impl OpenAiTransport {
@@ -79,6 +80,7 @@ impl OpenAiTransport {
         body: Value,
         compat: &ProviderCompat,
         tool_wire_shape: ResolvedToolWireShape,
+        user_id: Option<String>,
     ) -> Result<ProjectedHttpRequest, ProviderError> {
         let mut headers = HeaderMap::new();
         let bearer = format!("Bearer {}", self.api_key);
@@ -87,12 +89,22 @@ impl OpenAiTransport {
         headers.insert(AUTHORIZATION, auth);
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
+        if let Some(uid) = &user_id {
+            let uid_value = HeaderValue::from_str(uid)
+                .map_err(|error| ProviderError::Connection(format!("Invalid X-User-ID header: {error}")))?;
+            headers.insert(
+                reqwest::header::HeaderName::from_static("x-user-id"),
+                uid_value,
+            );
+        }
+
         Ok(ProjectedHttpRequest {
             url: join_base_url_and_api_path(&self.base_url, compat.openai_api_path()),
             headers,
             body,
             body_bytes: None,
             tool_wire_shape,
+            user_id,
         })
     }
 
@@ -132,6 +144,7 @@ impl AnthropicTransport {
             body,
             body_bytes: None,
             tool_wire_shape,
+            user_id: None,
         })
     }
 
@@ -225,9 +238,10 @@ impl ProviderTransport {
         body: Value,
         compat: &ProviderCompat,
         tool_wire_shape: ResolvedToolWireShape,
+        user_id: Option<String>,
     ) -> Result<ProjectedHttpRequest, ProviderError> {
         match self {
-            Self::OpenAi(transport) => transport.build_projected_request(body, compat, tool_wire_shape),
+            Self::OpenAi(transport) => transport.build_projected_request(body, compat, tool_wire_shape, user_id),
             Self::Anthropic(transport) => transport.build_projected_request(body, tool_wire_shape),
             Self::Vertex(transport) => transport
                 .inner
@@ -277,6 +291,7 @@ async fn send_projected_json_request(
         body,
         body_bytes,
         tool_wire_shape,
+        ..
     } = request;
 
     let builder = client.post(&url).headers(headers);
