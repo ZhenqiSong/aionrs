@@ -418,7 +418,7 @@ async fn test_engine_max_tokens_handling() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let result = engine
-        .run("Give me a long answer", "", "")
+        .run("Give me a long answer", "", None)
         .await
         .expect("engine should succeed");
 
@@ -520,7 +520,7 @@ async fn empty_final_falls_back_after_one_empty_retry() {
         .init_session("test-provider", "/tmp", None)
         .expect("init_session should succeed");
     let result = engine
-        .run("Answer visibly", "", "")
+        .run("Answer visibly", "", None)
         .await
         .expect("engine should fall back successfully");
 
@@ -575,7 +575,7 @@ async fn max_tokens_continuation_does_not_increment_reported_turns() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let result = engine
-        .run("Give me a long answer", "", "")
+        .run("Give me a long answer", "", None)
         .await
         .expect("engine should succeed");
 
@@ -623,7 +623,7 @@ async fn max_tokens_finalization_tool_call_falls_back_without_persisting_tool_us
         .expect("init_session should succeed");
 
     let result = engine
-        .run("Give me a long answer", "", "")
+        .run("Give me a long answer", "", None)
         .await
         .expect("engine should fall back successfully");
 
@@ -738,9 +738,9 @@ async fn test_engine_message_accumulation() {
         .init_session("test-provider", "/tmp", None)
         .expect("init_session should succeed");
 
-    engine.run("First message", "", "").await.expect("first run should succeed");
+    engine.run("First message", "", None).await.expect("first run should succeed");
     engine
-        .run("Second message", "", "")
+        .run("Second message", "", None)
         .await
         .expect("second run should succeed");
 
@@ -866,7 +866,7 @@ async fn test_engine_max_turns_runs_one_grace_finalization() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let result = engine
-        .run("Keep calling tools", "", "")
+        .run("Keep calling tools", "", None)
         .await
         .expect("engine should succeed with grace finalization");
 
@@ -914,7 +914,7 @@ async fn finalization_requests_can_be_asserted_without_tools() {
         std::env::temp_dir(),
     );
     let result = engine
-        .run("Say done", "", "")
+        .run("Say done", "", None)
         .await
         .expect("engine should return the final text");
 
@@ -949,7 +949,7 @@ async fn repeated_tool_call_failure_turns_stop_before_another_provider_request()
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, silent_output(), std::env::temp_dir());
     let err = engine
-        .run("keep retrying a failing tool", "", "")
+        .run("keep retrying a failing tool", "", None)
         .await
         .expect_err("engine should stop repeated tool-call-failure loops");
 
@@ -981,7 +981,7 @@ async fn repeated_tool_call_failure_threshold_one_stops_immediately() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, silent_output(), std::env::temp_dir());
     let err = engine
-        .run("keep retrying a failing tool", "", "")
+        .run("keep retrying a failing tool", "", None)
         .await
         .expect_err("engine should stop repeated tool-call-failure loops");
 
@@ -1013,7 +1013,7 @@ async fn repeated_tool_call_failure_disabled_runs_grace_finalization() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, silent_output(), std::env::temp_dir());
     let result = engine
-        .run("keep retrying a failing tool", "", "")
+        .run("keep retrying a failing tool", "", None)
         .await
         .expect("engine should stop cleanly");
 
@@ -1076,7 +1076,7 @@ async fn repeated_tool_call_malformed_stops_on_default_third_turn() {
         .expect("init_session should succeed");
 
     let err = engine
-        .run("repeat malformed", "", "")
+        .run("repeat malformed", "", None)
         .await
         .expect_err("engine should surface repeated tool-call-malformed loop");
 
@@ -1142,7 +1142,7 @@ async fn repeated_tool_call_malformed_threshold_one_stops_immediately() {
         std::env::temp_dir(),
     );
     let err = engine
-        .run("repeat malformed", "", "")
+        .run("repeat malformed", "", None)
         .await
         .expect_err("engine should surface repeated tool-call-malformed loop");
 
@@ -1174,7 +1174,7 @@ async fn repeated_tool_call_malformed_disabled_runs_grace_finalization() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, silent_output(), std::env::temp_dir());
     let result = engine
-        .run("repeat malformed", "", "")
+        .run("repeat malformed", "", None)
         .await
         .expect("engine should stop cleanly");
 
@@ -1246,7 +1246,7 @@ async fn mixed_valid_and_tool_call_malformed_calls_do_not_trip_breaker() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output.clone(), std::env::temp_dir());
     let result = engine
-        .run("mixed tool calls", "", "")
+        .run("mixed tool calls", "", None)
         .await
         .expect("engine should reach final text");
 
@@ -1281,7 +1281,7 @@ async fn test_engine_api_error_handling() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let err = engine
-        .run("Hello", "", "")
+        .run("Hello", "", None)
         .await
         .map(|_| panic!("expected error, got Ok"))
         .unwrap_err();

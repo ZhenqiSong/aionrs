@@ -297,7 +297,7 @@ async fn test_engine_max_turns_returns_ok() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output);
     let result = engine
-        .run("Keep calling tools", "")
+        .run("Keep calling tools", "", None)
         .await
         .expect("should return Ok, not Err");
 
@@ -322,7 +322,7 @@ async fn test_engine_api_error_handling() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output);
     let err = engine
-        .run("Hello", "")
+        .run("Hello", "", None)
         .await
         .map(|_| panic!("expected error, got Ok"))
         .unwrap_err();
