@@ -368,8 +368,8 @@ impl AgentEngine {
     /// This entry point is text-only: the input is wrapped in a single
     /// `ContentBlock::Text` and no markers are parsed. Slash commands are
     /// intercepted before any LLM call.
-    pub async fn run(&mut self, user_input: &str, msg_id: &str, user_id: Option<&str>) -> Result<AgentResult, AgentError> {
-        self.user_id = user_id.map(|s| s.to_string());
+    pub async fn run(&mut self, user_input: &str, msg_id: &str, user_id: Option<String>) -> Result<AgentResult, AgentError> {
+        self.user_id = user_id;
         // Slash command interception — before any LLM call.
         if let Some(result) = self.handle_command(user_input).await? {
             return Ok(result);

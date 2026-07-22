@@ -1398,7 +1398,7 @@ mod tests_handle_command {
     #[tokio::test]
     async fn run_intercepts_help_returns_zero_turns() {
         let mut engine = make_engine();
-        let result = engine.run("/help", "msg-1", "").await.unwrap();
+        let result = engine.run("/help", "msg-1", None).await.unwrap();
         assert_eq!(result.turns, 0);
         assert_eq!(result.usage.input_tokens, 0);
     }
@@ -1406,7 +1406,7 @@ mod tests_handle_command {
     #[tokio::test]
     async fn run_intercepts_quit_returns_user_aborted() {
         let mut engine = make_engine();
-        let err = engine.run("/quit", "msg-1", "").await.unwrap_err();
+        let err = engine.run("/quit", "msg-1", None).await.unwrap_err();
         assert!(matches!(err, AgentError::UserAborted));
     }
 
@@ -1451,7 +1451,7 @@ mod tests_handle_command {
     async fn run_treats_aion_files_marker_as_plain_text() {
         let mut engine = make_engine_with_provider(Arc::new(SingleResponseProvider));
         let input = "discuss [[AION_FILES]] and file.txt";
-        let _ = engine.run(input, "msg-1", "").await;
+        let _ = engine.run(input, "msg-1", None).await;
 
         let user_msg = engine
             .messages

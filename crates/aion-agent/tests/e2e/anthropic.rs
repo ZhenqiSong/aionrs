@@ -68,7 +68,7 @@ async fn test_anthropic_single_turn_completion() {
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
     let result = engine
-        .run("Say 'hello world' and nothing else.", "", "")
+        .run("Say 'hello world' and nothing else.", "", None)
         .await
         .expect("engine.run should not fail for a valid request");
 
@@ -106,7 +106,7 @@ async fn test_anthropic_tool_use() {
         "Read the file at path '{}' and tell me what it contains. Be brief.",
         path
     );
-    let result = engine.run(&prompt, "", "").await.expect("engine.run should not fail");
+    let result = engine.run(&prompt, "", None).await.expect("engine.run should not fail");
 
     assert!(!result.text.is_empty(), "response text should not be empty");
     // The model should have called Read and seen our content

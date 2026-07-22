@@ -42,7 +42,7 @@ pub(super) async fn handle(
     let mut mode_changed = false;
 
     {
-        let engine_fut = engine.run(content, msg_id, "");
+        let engine_fut = engine.run(content, msg_id, None);
         tokio::pin!(engine_fut);
 
         loop {

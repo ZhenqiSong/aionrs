@@ -86,7 +86,7 @@ impl AgentSpawner {
         );
         engine.set_tool_policy(child_policy);
 
-        match engine.run(&sub_config.prompt, "", "").await {
+        match engine.run(&sub_config.prompt, "", None).await {
             Ok(result) => SubAgentResult {
                 name: sub_config.name,
                 text: result.text,
@@ -170,7 +170,7 @@ impl Spawner for AgentSpawner {
         engine.set_initial_reasoning_effort(overrides.effort.clone());
         engine.set_tool_policy(child_policy);
 
-        match engine.run(&sub_config.prompt, "", "").await {
+        match engine.run(&sub_config.prompt, "", None).await {
             Ok(result) => SubAgentResult {
                 name: sub_config.name,
                 text: result.text,

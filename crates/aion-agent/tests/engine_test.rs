@@ -196,7 +196,7 @@ async fn test_engine_text_response_ends_turn() {
     let output = silent_output();
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
-    let result = engine.run("Hi", "", "").await.expect("engine should succeed");
+    let result = engine.run("Hi", "", None).await.expect("engine should succeed");
 
     assert_eq!(result.text, "Hello, world!");
     assert_eq!(result.stop_reason, StopReason::EndTurn);
@@ -251,7 +251,7 @@ async fn test_engine_tool_use_executes_and_continues() {
     let output = silent_output();
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
-    let result = engine.run("Use the tool", "", "").await.expect("engine should succeed");
+    let result = engine.run("Use the tool", "", None).await.expect("engine should succeed");
 
     assert_eq!(result.turns, 2);
     assert_eq!(result.text, "Done");
@@ -290,7 +290,7 @@ async fn test_engine_round_trips_thinking_signature_into_tool_followup_request()
     let mut engine =
         AgentEngine::new_with_provider(provider, test_config(), registry, silent_output(), std::env::temp_dir());
 
-    let result = engine.run("use tool", "", "").await.expect("engine should succeed");
+    let result = engine.run("use tool", "", None).await.expect("engine should succeed");
 
     assert_eq!(result.text, "done");
     let requests = requests.lock().unwrap();
@@ -356,7 +356,7 @@ async fn duplicate_tool_names_emit_distinct_tool_use_ids() {
     let output = Arc::new(RecordingOutputSink::default());
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output.clone(), std::env::temp_dir());
-    let result = engine.run("Use Glob twice", "", "").await.expect("engine should succeed");
+    let result = engine.run("Use Glob twice", "", None).await.expect("engine should succeed");
 
     assert_eq!(result.text, "Done");
     assert_eq!(
@@ -468,7 +468,7 @@ async fn empty_final_gets_one_visible_answer_nudge() {
     let output = silent_output();
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
-    let result = engine.run("Answer visibly", "", "").await.expect("engine should succeed");
+    let result = engine.run("Answer visibly", "", None).await.expect("engine should succeed");
 
     assert_eq!(result.text, "Visible answer");
     assert_eq!(result.stop_reason, StopReason::EndTurn);
@@ -804,7 +804,7 @@ async fn test_engine_token_usage_tracking() {
     let output = silent_output();
 
     let mut engine = AgentEngine::new_with_provider(provider, config, registry, output, std::env::temp_dir());
-    let result = engine.run("Do work", "", "").await.expect("engine should succeed");
+    let result = engine.run("Do work", "", None).await.expect("engine should succeed");
 
     assert_eq!(
         result.usage.input_tokens, 180,
